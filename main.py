@@ -5,9 +5,11 @@ from aiogram import Bot, Dispatcher
 from aiogram.filters import CommandStart
 from aiogram.types import Message
 from keybords import kb_client
+from handlers.handlers import router as handlers_router
 
 bot = Bot(TOKEN)
 dp = Dispatcher()
+dp.include_router(handlers_router)
 
 
 @dp.message(CommandStart())

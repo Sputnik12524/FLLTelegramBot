@@ -20,10 +20,14 @@ b5 = InlineKeyboardButton(
     text="Актуальный рекорд России",
     callback_data="record"
 )
+b6 = InlineKeyboardButton(
+    text="Калькулятор миссий",
+    callback_data="missions"
+)
 
 first_row = [b1]
 second_row = [b2]
-third_row = [b3]
+third_row = [b3, b6]
 fourth_row = [b4, b5]
 rows = [first_row, second_row, third_row, fourth_row]
 kb_client = InlineKeyboardMarkup(inline_keyboard=rows)
