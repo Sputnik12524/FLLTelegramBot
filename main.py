@@ -18,7 +18,6 @@ dp.include_router(admin_router)
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
-    await rq.set_user(message.from_user.id)
     await message.answer("Привет! Этот бот был разработан для Лиги Решений и предоставляет следующие полезные функции: ", reply_markup=kb_client)
 
 

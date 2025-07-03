@@ -4,6 +4,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from database.models import async_session, User, User_Teams
 from calculator import fll_calculator
+from sqlalchemy import select
 
 class Register(StatesGroup):
     waiting_info = State()
@@ -148,11 +149,21 @@ async def register2(message: Message, state: FSMContext):
 
     async with async_session() as session:
         async with session.begin():
-            team = User_Teams(team = tn, city = c, number = numb)
-            session.add(team)
-            await session.flush()
+            team = await session.scalar(
+                select(User_Teams).where(
+                    User_Teams.team == tn,
+                    User_Teams.city == c,
+                    User_Teams.number == numb
+                )
+            )
+            if not team:
+                team = User_Teams(team = tn, city = c, number = numb)
+                session.add(team)
+                await session.flush()
 
-            user = User(tg_id = message.from_user.id)
+     
+
+            user = User(tg_id = message.from_user.id, team_id = team.id)
             session.add(user)
             await session.commit()
         await message.answer("Вы зарегистрированы и можете начать пользоваться ботом! :)")
