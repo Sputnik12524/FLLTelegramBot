@@ -157,7 +157,3 @@ async def register2(message: Message, state: FSMContext):
             await session.commit()
         await message.answer("Вы зарегистрированы и можете начать пользоваться ботом! :)")
         await state.clear()
-
-
-
-

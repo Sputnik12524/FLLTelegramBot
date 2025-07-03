@@ -5,12 +5,15 @@ from aiogram.filters import CommandStart
 from aiogram.types import Message
 from keybords import kb_client
 from handlers.handlers import router as handlers_router
+from admins_panel.admin_keyboard import router as admin_router
 from database.models import async_main
 import database.requests as rq
+
 
 bot = Bot(TOKEN)
 dp = Dispatcher()
 dp.include_router(handlers_router)
+dp.include_router(admin_router)
 
 
 @dp.message(CommandStart())
