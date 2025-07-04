@@ -15,22 +15,20 @@ worksheet = spreadsheet.worksheet("patent")
 def count_filled_rows(worksheet):
     try:
         all_rows = worksheet.get_all_values()
-
         filled_rows_count = 0
         for row in all_rows:
             if any(cell.strip() for cell in row):
                 filled_rows_count += 1
-
         return filled_rows_count
     except Exception as e:
         print(f"An error occured: {e}")
+        return 0
 
 
 class Publish(StatesGroup):
     waiting_for_mission_number = State()
     waiting_for_media = State()
     waiting_for_caption = State()
-    waiting_for_description = State()
 
 
 @router.callback_query(F.data == "menu_pt")
@@ -59,32 +57,40 @@ async def publish_attachment(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "Выберите миссию(-и), в которых используется насадка.\nВведите названия миссий через запятую",
         reply_markup=back_pt_client)
+    await state.set_state(Publish.waiting_for_mission_number)
 
 
 @router.message(Publish.waiting_for_mission_number)
 async def load_image(message: Message, state: FSMContext):
+    await state.update_data(missions=message.text)
     await state.set_state(Publish.waiting_for_media)
     await message.answer("Пожалуйста, отправьте изображение.")
 
 
-@router.message(state=Publish.waiting_for_media)
+@router.message(Publish.waiting_for_media)
 async def photo_received(message: Message, state: FSMContext):
+    if not message.photo:
+        await message.answer("Пожалуйста, отправьте изображение.")
+        return
+    
     await state.update_data(photo_id=message.photo[-1].file_id)
     await state.set_state(Publish.waiting_for_caption)
     await message.answer("Введите подпись к изображению.")
 
 
-@router.message(state=Publish.waiting_for_caption)
+@router.message(Publish.waiting_for_caption)
 async def caption_received(message: Message, state: FSMContext):
     if not message.text:
         await message.answer("Подпись не может быть пустой, введите текст.")
         return
+    
     data = await state.get_data()
     photo_id = data.get('photo_id')
+    missions = data.get('missions')
     caption = message.text
-    await message.answer(f"Изображение ID: {photo_id}, Подпись: {caption}")
-    await state.finish()
-
+    
+    await message.answer(f"Миссии: {missions}\nИзображение ID: {photo_id}\nПодпись: {caption}")
+    await state.clear()
 
 @router.message(state=Publish.waiting_for_caption)
 async def invalid_caption(message: Message):
