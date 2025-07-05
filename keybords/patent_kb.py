@@ -28,17 +28,29 @@ b_back = InlineKeyboardButton(
     text="Назад ↩️",
     callback_data="menu_pt"
 )
+b_again = InlineKeyboardButton(
+    text="Начать заново",
+    callback_data="publish_pt"
+)
+b_confirm = InlineKeyboardButton(
+    text="Подтвердить ✅",
+    callback_data="confirm_pt"
+)
 
 first_row = [b1]
 second_row = [b2]
 third_row = [b3, b4, b5]
 fourth_row = [b6]
 back_row = [b_back]
+again_row = [b_again]
+confirm_row = [b_confirm]
 
 main_rows = [first_row, second_row, third_row, fourth_row, back_row]
 zero_rows = [fourth_row, back_row]
 back_rows = [back_row]
+confirm_rows = [back_row, again_row, confirm_row]
 
 main_patent_kb_client = InlineKeyboardMarkup(inline_keyboard=main_rows)
 zero_patent_kb_client = InlineKeyboardMarkup(inline_keyboard=zero_rows)
 back_pt_client = InlineKeyboardMarkup(inline_keyboard=back_rows)
+confirm_pt_client = InlineKeyboardMarkup(inline_keyboard=confirm_rows)
