@@ -1,6 +1,13 @@
 from aiogram import Router, F
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, Message
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
+from database.models import async_session, User, User_Teams
 from calculator import fll_calculator
+from sqlalchemy import select
+
+class Register(StatesGroup):
+    waiting_info = State()
 
 router = Router()
 
@@ -118,3 +125,46 @@ async def back_to_calculator(callback: CallbackQuery):
         await callback.answer()
     except Exception as e:
         await callback.answer(f"Ошибка: {str(e)}")
+
+
+
+@router.callback_query(F.data=="register")
+async def register(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await callback.message.answer("Зарегистрируйтесь в системе, чтобы сохранять результаты!")
+    await callback.message.answer(f"Отправьте мне информацию о своей команде в таком формате:\n Название \n Город \n Номер")
+    await state.set_state(Register.waiting_info)
+
+@router.message(Register.waiting_info)
+async def register2(message: Message, state: FSMContext):
+    parts = message.text.strip().split('\n')
+
+    if len(parts) != 3:
+        await message.answer(f"Неверный формат! Пример ввода: \n Sputnik Original \n Санкт-Петербург \n 12524")
+        return
+    
+    tn, c, num = parts
+
+    numb = int(num)
+
+    async with async_session() as session:
+        async with session.begin():
+            team = await session.scalar(
+                select(User_Teams).where(
+                    User_Teams.team == tn,
+                    User_Teams.city == c,
+                    User_Teams.number == numb
+                )
+            )
+            if not team:
+                team = User_Teams(team = tn, city = c, number = numb)
+                session.add(team)
+                await session.flush()
+
+     
+
+            user = User(tg_id = message.from_user.id, team_id = team.id)
+            session.add(user)
+            await session.commit()
+        await message.answer("Вы зарегистрированы и можете начать пользоваться ботом! :)")
+        await state.clear()
