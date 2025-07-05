@@ -1,5 +1,6 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+
 class FLLCalculator:
     def __init__(self):
         self.missions = {
