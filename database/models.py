@@ -6,23 +6,27 @@ import os
 engine = create_async_engine('sqlite+aiosqlite:///mydatabase.db', echo=True)
 async_session = async_sessionmaker(engine)
 
+
 class Base(AsyncAttrs, DeclarativeBase):
     pass
 
+
 class User(Base):
-    __tablename__= 'users'
+    __tablename__ = 'users'
 
     id: Mapped[int] = mapped_column(primary_key=True)
     tg_id: Mapped[int] = mapped_column(BigInteger)
     team_id: Mapped[int] = mapped_column(ForeignKey('teams.id'))
 
+
 class User_Teams(Base):
     __tablename__ = 'teams'
-    
+
     id: Mapped[int] = mapped_column(primary_key=True)
     team: Mapped[str] = mapped_column(String(100))
     city: Mapped[str] = mapped_column(String(100))
     number: Mapped[int] = mapped_column(Integer)
+
 
 class Record(Base):
     __tablename__ = 'records'
@@ -31,16 +35,19 @@ class Record(Base):
     result: Mapped[int] = mapped_column(Integer)
     video_id: Mapped[int] = mapped_column(BigInteger)
 
+
 class Patent(Base):
     __tablename__ = 'patents'
     id: Mapped[int] = mapped_column(primary_key=True)
 
     team_number: Mapped[int] = mapped_column(ForeignKey('teams.id'))
-    name: Mapped[str] = mapped_column(String(100))
-    description: Mapped[str] = mapped_column(String(200))
+    caption: Mapped[str] = mapped_column(String(50))
+    description: Mapped[str] = mapped_column(String(250))
     missions: Mapped[list] = mapped_column(JSON)
-    video_id: Mapped[int] = mapped_column(BigInteger)
+    image_id: Mapped[str] = mapped_column(JSON)
+    video_id: Mapped[str] = mapped_column(JSON)
     approved: Mapped[bool] = mapped_column(Boolean)
+
 
 async def async_main():
     print("async_main() was started")
@@ -52,4 +59,3 @@ async def async_main():
         print("База данных успешно создана.")
     except Exception as e:
         print(f"Произошла ошибка: {e}")
-

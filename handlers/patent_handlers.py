@@ -1,9 +1,13 @@
 from aiogram import F, Router
+from sqlalchemy import JSON
 from aiogram.types import CallbackQuery, Message, InputMediaPhoto, InputMediaVideo
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from keybords.patent_kb import main_patent_kb_client, zero_patent_kb_client, back_pt_client, confirm_pt_client
 from keybords.keybord_client import kb_client
+import database.requests as rq
+from typing import Union, List, Tuple
+
 import gspread
 
 router = Router()
@@ -24,6 +28,8 @@ def count_filled_rows(worksheet):
         print(f"An error occured: {e}")
         return 0"""
 
+approved_missions = False
+proceed_missions = None
 
 class Publish(StatesGroup):
     publish = State()
@@ -32,6 +38,66 @@ class Publish(StatesGroup):
     caption = State()
     description = State()
     confirm = ()
+
+
+def validate_and_process_numbers(data: Union[List[int], Tuple[int, ...]]) -> Union[List[int], None]:
+    """
+    Проверяет, является ли входной аргумент списком или кортежем натуральных чисел,
+    где каждое число находится в диапазоне от 1 до 15 включительно.
+
+    Args:
+        data: Входные данные, которые должны быть списком или кортежем целых чисел.
+
+    Returns:
+        Список чисел, если все условия соблюдены;
+        None, если входные данные не соответствуют условиям.
+    """
+    if not isinstance(data, (list, tuple)):
+        return None
+
+    processed_list = []
+    for item in data:
+        # Проверяем, является ли элемент целым числом
+        if not isinstance(item, int):
+            return None
+
+        # Проверяем, что число является натуральным (>= 1) и не больше 15
+        if not (1 <= item <= 15):
+            return None
+
+        processed_list.append(item)
+
+    return processed_list
+
+
+def get_missions_input_and_validate(missions):
+    # Разделяем строку по пробелам на отдельные строковые числа
+    str_numbers = missions.split(", ")
+
+    numbers_for_validation = []
+    # Попытка преобразовать каждую строку в целое число
+    for s_num in str_numbers:
+        try:
+            num = int(s_num)
+            numbers_for_validation.append(num)
+        except ValueError:
+            print(f"Ошибка: '{s_num}' не является целым числом. Ввод должен содержать только числа.")
+            approved_missions = False
+            return None  # Прерываем, так как ввод некорректен
+
+    # Передаем список целых чисел в функцию валидации
+    result = validate_and_process_numbers(numbers_for_validation)
+
+    if result is not None:
+        print(f"\nВведенные данные прошли проверку: {result}")
+        approved_missions = True
+        return result
+    else:
+        print(f"\nВведенные данные не прошли проверку.")
+        # Дополнительные подсказки пользователю
+        print("Убедитесь, что все числа являются натуральными (от 1) и не превышают 15.")
+        approved_missions = False
+        return None
 
 
 @router.callback_query(F.data == "menu_pt")
@@ -68,7 +134,13 @@ async def publish_attachment(callback: CallbackQuery, state: FSMContext):
 
 @router.message(Publish.mission_number)
 async def load_image(message: Message, state: FSMContext):
-    await state.update_data(missions=message.text)
+    global proceed_missions
+    proceed_missions = get_missions_input_and_validate(message.text)
+    if proceed_missions is None:
+        await message.answer("Некорректный ввод. Отправьте номера миссий через запятую. Убедитесь, что все номера миссий натуральные и не больше 15.")
+        return
+
+    await state.update_data(missions=proceed_missions)
     await state.set_state(Publish.media)
     await message.answer(
         "Пожалуйста, отправьте фото/видео вашей насадки. На фото насасдка должна быть показана целиком, весь дизайн и функционал должны быть продемонстрированы")
@@ -142,13 +214,12 @@ async def patent_sent(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer("Ваша насадка была успешна отправлена на модерацию и будет опубликована в ближайшие дни.", reply_markup=back_pt_client)
 
     data = await state.get_data()
-    # image_ids = data.get('images_ids')
-    # video_ids = data.get('video_ids')
+    image_ids = data.get('images_ids')
+    video_ids = data.get('video_ids')
     missions = data.get('missions')
     caption = data.get('caption')
     description = data.get('description')
 
+    print(proceed_missions)
     # Действия с БД
-
-
-
+    await rq.add_patent(1, missions=list(proceed_missions), caption=caption, description=description, image_id=image_ids, video_id=video_ids)

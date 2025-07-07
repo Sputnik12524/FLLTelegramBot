@@ -8,7 +8,6 @@ from handlers.handlers import router as handlers_router
 from handlers.patent_handlers import router as patent_router
 from admins_panel.admin_keyboard import router as admin_router
 from database.models import async_main
-import database.requests as rq
 
 
 bot = Bot(TOKEN)
