@@ -8,7 +8,7 @@ from keybords.keybord_client import kb_client
 import database.requests as rq
 from typing import Union, List, Tuple
 
-import gspread
+"""import gspread"""
 
 router = Router()
 """gc = gspread.service_account(filename="credentials.json")
