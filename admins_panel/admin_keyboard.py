@@ -3,7 +3,8 @@ from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKe
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
-from database.models import async_session, User, User_Teams
+from database.models import User, UserTeams
+from database.engine import async_session_factory
 import os
 
 # Пароль для админ-панели

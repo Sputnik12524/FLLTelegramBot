@@ -1,11 +1,15 @@
 from aiogram import F, Router
-from sqlalchemy import JSON
 import asyncio
 from aiogram.client.bot import Bot
 from typing import List, Dict, Union
+
 from aiogram.types import CallbackQuery, Message, InputMediaPhoto, InputMediaVideo
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from database.models import User
 from keybords.patent_kb import main_patent_kb_client, zero_patent_kb_client, back_pt_client, confirm_pt_client
 from keybords.keybord_client import kb_client
 import database.requests as rq
@@ -130,12 +134,33 @@ async def show_patent_menu(callback: CallbackQuery):
 
 
 @router.callback_query(F.data == "publish_pt")
-async def publish_attachment(callback: CallbackQuery, state: FSMContext):
+async def publish_attachment(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
     await callback.answer("Опубликовать насадку")
-    await state.set_state(Publish.mission_number)
-    await callback.message.edit_text(
-        "Выберите миссию(-и), в которых используется насадка.\nВведите названия миссий через запятую",
-        reply_markup=back_pt_client)
+    user_tg_id = callback.from_user.id
+
+    # Проверяем наличие пользователя и его team_id.
+    # Используем асинхронную сессию, переданную через middleware
+    user_query = await session.execute(
+        select(User).where(User.tg_id == user_tg_id)
+    )
+    user_obj = user_query.scalar_one_or_none()  # Получаем один объект User или None
+
+    # Логика проверки:
+    # 1. Пользователь не найден в таблице 'users' вообще (значит, он новый)
+    # 2. Пользователь найден, но его team_id = NULL (если `nullable=True` для team_id)
+    # 3. Пользователь найден, но его team_id указывает на "пустую" или "дефолтную" команду (если `nullable=False` и вы используете такую команду)
+
+    # В данной реализации модели User (с nullable=True для team_id)
+    if user_obj is None or user_obj.team_id is None:
+        await callback.message.answer(
+            "Вы еще не зарегистрированы в команде. Пожалуйста, сначала зарегистрируйтесь, чтобы публиковать изобретения.\n",
+            reply_markup=back_pt_client
+        )
+    else:
+        await state.set_state(Publish.mission_number)
+        await callback.message.edit_text(
+            "Выберите миссию(-и), в которых используется насадка.\nВведите названия миссий через запятую",
+            reply_markup=back_pt_client)
 
 
 @router.message(Publish.mission_number)
@@ -362,20 +387,48 @@ async def description_received(message: Message, state: FSMContext):
 
 
 @router.callback_query(F.data == "confirm_pt")
-async def patent_sent(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
-    await callback.message.answer(
-        "Ваша насадка была успешна отправлена на модерацию и будет опубликована в ближайшие дни.",
-        reply_markup=back_pt_client)
-
+async def patent_sent(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
     data = await state.get_data()
-    image_ids = data.get('images_ids')
-    video_ids = data.get('video_ids')
-    missions = data.get('missions')
-    caption = data.get('caption')
-    description = data.get('description')
+    user_tg_id = callback.from_user.id  # Получаем Telegram ID пользователя
 
-    print(proceed_missions)
-    # Действия с БД
-    await rq.add_patent(1, missions=list(proceed_missions), caption=caption, description=description,
-                        image_id=image_ids, video_id=video_ids)
+    # Извлекаем все данные из состояния
+    caption = data.get('caption', 'Без названия')
+    description = data.get('description', 'Без описания')
+    missions = data.get('missions', [])  # Получаем список миссий
+    image_ids = data.get('images_ids', [])
+    video_ids = data.get('video_ids', [])
+
+    # Проверка длины полей
+    if len(caption) > 50:
+        await callback.message.answer("Название насадки слишком длинное (макс. 50 символов).", reply_markup=back_pt_client)
+        return
+    if len(description) > 250:
+        await callback.message.answer("Описание насадки слишком длинное (макс. 250 символов).", reply_markup=back_pt_client)
+        return
+
+    try:
+        # Вызываем функцию для сохранения патента
+        await rq.add_patent_to_db(
+            user_tg_id=user_tg_id,
+            missions=missions,  # Передаем список
+            caption=caption,
+            description=description,
+            image_ids=image_ids,  # Передаем список
+            video_ids=video_ids,  # Передаем список
+            session=session  # Передаем текущую сессию
+        )
+
+        await session.commit()  # Фиксируем изменения в базе данных
+        await callback.message.answer("Насадка успешно сохранена и отправлена на модерацию! Вскоре она будет видна здесь в ближайшие дни :)")
+        await state.clear()  # Очищаем состояние после успешной публикации
+
+    except ValueError as ve:  # Отлавливаем ошибку, если пользователь не найден (хотя она не должна срабатывать, если пользователь уже зарегистрирован)
+        await session.rollback()
+        print(f"Ошибка сохранения изобретения (ValueError): {ve}")
+        await callback.message.answer(f"Ошибка: {ve} Пожалуйста, попробуйте снова или свяжитесь с администратором.")
+    except Exception as e:  # Общая ошибка при сохранении
+        await session.rollback()  # Откатываем все изменения в случае любой ошибки
+        print(f"Произошла непредвиденная ошибка при сохранении изобретения: {e}")
+        await callback.message.answer("Произошла непредвиденная ошибка при сохранении патента. Попробуйте еще раз.")
+    finally:
+        await state.clear()
