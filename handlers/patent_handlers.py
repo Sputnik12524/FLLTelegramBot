@@ -1,6 +1,7 @@
 from aiogram import F, Router
 from sqlalchemy import JSON
 import asyncio
+from aiogram.client.bot import Bot
 from typing import List, Dict, Union
 from aiogram.types import CallbackQuery, Message, InputMediaPhoto, InputMediaVideo
 from aiogram.fsm.state import StatesGroup, State
@@ -149,7 +150,7 @@ async def load_image(message: Message, state: FSMContext):
     await state.update_data(missions=proceed_missions)
     await state.set_state(Publish.media)
     await message.answer(
-        "Пожалуйста, отправьте фото/видео вашей насадки. На фото насасдка должна быть показана целиком, весь дизайн и функционал должны быть продемонстрированы")
+        "Пожалуйста, отправьте фото/видео вашей насадки. На фото насадка должна быть показана целиком, весь дизайн и функционал должны быть продемонстрированы")
 
 
 """@router.message(Publish.media)
@@ -184,73 +185,8 @@ async def photo_received(message: Message, state: FSMContext):
     await message.answer("Введите название насадки.")"""
 
 
-@router.message(Publish.media)
-async def process_media_and_ask_caption(message: Message, state: FSMContext):
-    chat_id = message.chat.id
-    current_media_group_id = message.media_group_id
-
-    # 1. Проверка на НЕ-медиа сообщение
-    if not message.photo and not message.video:
-        await message.answer(
-            "Пожалуйста, отправьте фото/видео вашей насадки. На фото насадка должна быть показана целиком, весь дизайн и функционал должны быть продемонстрированы.")
-        return
-
-    # 2. Обработка ОДИНОЧНОГО фото/видео (не часть альбома)
-    if not current_media_group_id:
-        images_ids = [message.photo[-1].file_id] if message.photo else []
-        video_ids = [message.video.file_id] if message.video else []
-
-        await state.update_data(images_ids=images_ids, video_ids=video_ids)
-        await state.set_state(Publish.caption)
-        await message.answer("Введите название насадки.")
-
-        # Очищаем данные альбома для этого чата, если они были (на случай, если пользователь отправил альбом, а потом одиночное медиа)
-        if chat_id in album_collector:
-            if album_collector[chat_id].get("processing_task") and not album_collector[chat_id]["processing_task"].done():
-                album_collector[chat_id]["processing_task"].cancel()
-            del album_collector[chat_id]
-        return
-
-    # 3. Обработка СООБЩЕНИЙ, ЯВЛЯЮЩИХСЯ ЧАСТЬЮ МЕДИАГРУППЫ (АЛЬБОМА)
-
-    # Инициализируем или сбрасываем данные для нового альбома
-    if chat_id not in album_collector or album_collector[chat_id]["media_group_id"] != current_media_group_id:
-        # Отменяем предыдущую задачу, если она была и еще не завершилась (например, если новый альбом начался до завершения старого)
-        if chat_id in album_collector and album_collector[chat_id].get("processing_task") and not \
-                album_collector[chat_id]["processing_task"].done():
-            album_collector[chat_id]["processing_task"].cancel()
-        album_collector[chat_id] = {
-            "media_group_id": current_media_group_id,
-            "photos": [],
-            "videos": [],
-            "processing_task": None  # Здесь будем хранить ссылку на запланированную задачу
-        }
-
-    collector_data = album_collector[chat_id]
-
-    # Добавляем текущее медиа в список собранных
-    if message.photo:
-        collector_data["photos"].append(message.photo[-1].file_id)  # Берем самый большой размер фото
-    elif message.video:
-        collector_data["videos"].append(message.video.file_id)
-
-    # Отменяем любую ранее запланированную задачу для этого альбома.
-    # Это ключевой момент дебоунса: если пришло новое медиа из того же альбома,
-    # мы "сбрасываем" таймер и ждем еще немного.
-    if collector_data["processing_task"] and not collector_data["processing_task"].done():
-        collector_data["processing_task"].cancel()
-
-    # Запускаем новую задачу для обработки альбома после короткой задержки.
-    # Эта задача выполнится только в том случае, если за время задержки не придет
-    # новых сообщений для ЭТОГО ЖЕ альбома.
-    collector_data["processing_task"] = asyncio.create_task(
-        _finalize_album_processing(chat_id, state, current_media_group_id)
-    )
-
-
 # Асинхронная функция для окончательной обработки альбома
-async def _finalize_album_processing(chat_id: int, state: FSMContext, media_group_id: str):
-    global bot
+async def _finalize_album_processing(bot_instance: Bot, chat_id: int, state: FSMContext, media_group_id: str):
     """
     Вызывается после небольшой задержки для окончательной обработки собранных медиа
     и отправки ОДНОГО ответного сообщения.
@@ -258,11 +194,14 @@ async def _finalize_album_processing(chat_id: int, state: FSMContext, media_grou
     try:
         await asyncio.sleep(ALBUM_PROCESSING_DELAY)
 
-        # Проверяем, что это все еще тот же альбом, который мы ждали,
-        # и что он не был обработан или сброшен другим способом.
+        # Проверяем, что это тот же альбом, который мы ждали,
+        # и он не был обработан или сброшен другим способом.
         if chat_id in album_collector and album_collector[chat_id]["media_group_id"] == media_group_id:
             collected_photos = album_collector[chat_id]["photos"]
             collected_videos = album_collector[chat_id]["videos"]
+
+            print(f"DEBUG: Collected photos for album {media_group_id}: {collected_photos}")
+            print(f"DEBUG: Collected videos for album {media_group_id}: {collected_videos}")
 
             # Обновляем FSM-контекст всеми собранными ID медиафайлов
             await state.update_data(images_ids=collected_photos, video_ids=collected_videos)
@@ -270,7 +209,7 @@ async def _finalize_album_processing(chat_id: int, state: FSMContext, media_grou
 
             # Отправляем ответное сообщение ТОЛЬКО ОДИН РАЗ
             # bot тут должен быть доступен (можно передать его в аргументы функции или сделать глобальным)
-            await bot.send_message(chat_id, "Введите название насадки.")  # Предполагается, что 'bot' доступен
+            await bot_instance.send_message(chat_id, "Введите название насадки.")  # Предполагается, что 'bot' доступен
 
             # Очищаем данные из временного хранилища, так как альбом обработан
             del album_collector[chat_id]
@@ -283,10 +222,82 @@ async def _finalize_album_processing(chat_id: int, state: FSMContext, media_grou
         print(f"Ошибка в _finalize_album_processing для чата {chat_id}: {e}")
 
 
+@router.message(Publish.media)
+async def process_media_and_ask_caption(message: Message, state: FSMContext):
+    chat_id = message.chat.id
+    current_media_group_id = message.media_group_id
+
+    # 1. Проверка на НЕ-медиа сообщение
+    if not message.photo and not message.video:
+        await message.answer(
+            "Пожалуйста, отправьте фото/видео вашей насадки. На фото насадка должна быть показана целиком, весь дизайн и функционал должны быть продемонстрированы.")
+        return
+
+    current_bot_instance = message.bot
+
+    # 2. Обработка ОДИНОЧНОГО фото/видео (не часть альбома)
+    # Если media_group_id отсутствует, это одиночное медиа
+    if not current_media_group_id:
+        images_ids = [message.photo[-1].file_id] if message.photo else []  # Берем только ID самой большой фотографии
+        video_ids = [message.video.file_id] if message.video else []  # Берем ID видео
+
+        await state.update_data(images_ids=images_ids, video_ids=video_ids)
+        await state.set_state(Publish.caption)
+        await message.answer("Введите название насадки.")
+
+        # Если было незавершенное ожидание альбома, отменяем его
+        if chat_id in album_collector:
+            if album_collector[chat_id].get("processing_task") and not album_collector[chat_id]["processing_task"].done():
+                album_collector[chat_id]["processing_task"].cancel()
+            del album_collector[chat_id]  # Очищаем данные по альбому
+        return
+
+    # 3. Обработка СООБЩЕНИЙ, ЯВЛЯЮЩИХСЯ ЧАСТЬЮ МЕДИАГРУППЫ (АЛЬБОМА)
+
+    # Инициализируем или сбрасываем данные для нового альбома.
+    # Инициализируем или сбрасываем данные для нового альбома/группы
+    # Проверяем, это новый альбом или продолжение существующего?
+    if chat_id not in album_collector or album_collector[chat_id]["media_group_id"] != current_media_group_id:
+        # Если это новый альбом, или предыдущий альбом был отменен/заброшен,
+        # отменяем любую старую задачу и инициализируем новые данные
+        if chat_id in album_collector and album_collector[chat_id].get("processing_task") and not \
+                album_collector[chat_id]["processing_task"].done():
+            album_collector[chat_id]["processing_task"].cancel()
+        album_collector[chat_id] = {
+            "media_group_id": current_media_group_id,
+            "photos": [],
+            "videos": [],
+            "processing_task": None  # Здесь будем хранить ссылку на запланированную задачу
+        }
+
+    collector_data = album_collector[chat_id]
+
+    # Добавляем текущее медиа в список собранных ID
+    if message.photo:
+        collector_data["photos"].append(message.photo[-1].file_id)  # Добавляем только ID самого большого размера фото
+    elif message.video:
+        collector_data["videos"].append(message.video.file_id)  # Добавляем ID видео
+
+    # Отменяем любую ранее запланированную задачу для этого альбома.
+    # Это позволяет "сбросить" таймер, если пришло новое медиа из той же группы.
+    if collector_data["processing_task"] and not collector_data["processing_task"].done():
+        collector_data["processing_task"].cancel()
+
+    # Запускаем новую задачу для обработки альбома после короткой задержки.
+    # Эта задача выполнится только в том случае, если за время задержки не придет
+    # новых сообщений для ЭТОГО ЖЕ альбома.
+    collector_data["processing_task"] = asyncio.create_task(
+        _finalize_album_processing(current_bot_instance, chat_id, state, current_media_group_id)
+    )
+
+
 @router.message(Publish.caption)
 async def caption_received(message: Message, state: FSMContext):
     if not message.text:
         await message.answer("Подпись не может быть пустой, введите текст.")
+        return
+    if len(message.text) > 50:
+        await message.answer("Превышен лимит символов, введите название еще раз")
         return
 
     await state.update_data(caption=message.text)
@@ -296,11 +307,15 @@ async def caption_received(message: Message, state: FSMContext):
 
 @router.message(Publish.description)
 async def description_received(message: Message, state: FSMContext):
+    if len(message.text) > 250:
+        await message.answer("Превышен лимит символов, введите описание еще раз")
+        return
+
     await state.update_data(description=message.text)
 
     data = await state.get_data()
-    image_ids = data.get('images_ids')
-    video_ids = data.get('video_ids')
+    image_ids = data.get('images_ids', [])  # Инициализируем пустым списком, если нет данных
+    video_ids = data.get('video_ids', [])  # Инициализируем пустым списком, если нет данных
     missions = data.get('missions')
     caption = data.get('caption')
     description = data.get('description')
@@ -312,11 +327,36 @@ async def description_received(message: Message, state: FSMContext):
     for video in video_ids:
         media.append(InputMediaVideo(media=video))
 
-    if media:
-        await message.answer_media_group(media)  # Отправка медиагруппы
+    if not media:  # Если медиа вообще не было
+        await message.answer(
+            f"Нет медиа для отправки.\n\nМиссии: {missions}\nНазвание: {caption}\nОписание: {description}\n<b>ID:</b>",
+            reply_markup=confirm_pt_client, parse_mode="html"
+        )
+    elif len(media) == 1:  # Если только ОДИН медиафайл
+        # Определяем тип медиа и отправляем его с подписью и клавиатурой
+        if isinstance(media[0], InputMediaPhoto):
+            await message.answer_photo(
+                photo=media[0].media,
+                caption=f"Миссии: {missions}\nНазвание: {caption}\nОписание: {description}\n<b>ID:</b>\nИзображения - {image_ids}",
+                reply_markup=confirm_pt_client,
+                parse_mode="html"
+            )
+        elif isinstance(media[0], InputMediaVideo):
+            await message.answer_video(
+                video=media[0].media,
+                caption=f"Миссии: {missions}\nНазвание: {caption}\nОписание: {description}\n<b>ID:</b>\nвидео - {video_ids}",
+                reply_markup=confirm_pt_client,
+                parse_mode="html"
+            )
+    else:  # Если МНОГО медиафайлов (медиагруппа)
+        # Отправляем медиагруппу (без общей подписи и клавиатуры)
+        await message.answer_media_group(media)
+        # А затем ОТДЕЛЬНЫМ сообщением отправляем подпись и клавиатуру
         await message.answer(
             f"Миссии: {missions}\nНазвание: {caption}\nОписание: {description}\n<b>ID:</b>\nвидео - {video_ids}\nкартинки - {image_ids}",
-            reply_markup=confirm_pt_client, parse_mode="html")
+            reply_markup=confirm_pt_client,
+            parse_mode="html"
+        )
 
     await state.set_state(Publish.confirm)
 
