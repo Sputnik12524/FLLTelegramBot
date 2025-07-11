@@ -1,16 +1,17 @@
 from aiogram import F, Router
 import asyncio
 from aiogram.client.bot import Bot
-from typing import List, Dict, Union
+from typing import Dict, Optional
 
 from aiogram.types import CallbackQuery, Message, InputMediaPhoto, InputMediaVideo
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import User
-from keybords.patent_kb import main_patent_kb_client, zero_patent_kb_client, back_pt_client, confirm_pt_client
+from database.models import User, Patent
+from keybords.patent_kb import zero_patent_kb_client, back_pt_client, confirm_pt_client, get_patent_menu_keyboard, \
+    patent_kb_client
 from keybords.keybord_client import kb_client
 import database.requests as rq
 from typing import Union, List, Tuple
@@ -47,7 +48,10 @@ class Publish(StatesGroup):
     media = State()
     caption = State()
     description = State()
-    confirm = ()
+    confirm = State()
+
+class PatentBrowsing(StatesGroup):
+    browsing_menu = State()
 
 
 def validate_and_process_numbers(data: Union[List[int], Tuple[int, ...]]) -> Union[List[int], None]:
@@ -92,7 +96,6 @@ def get_missions_input_and_validate(missions):
             numbers_for_validation.append(num)
         except ValueError:
             print(f"Ошибка: '{s_num}' не является целым числом. Ввод должен содержать только числа.")
-            approved_missions = False
             return None  # Прерываем, так как ввод некорректен
 
     # Передаем список целых чисел в функцию валидации
@@ -100,13 +103,11 @@ def get_missions_input_and_validate(missions):
 
     if result is not None:
         print(f"\nВведенные данные прошли проверку: {result}")
-        approved_missions = True
         return result
     else:
         print(f"\nВведенные данные не прошли проверку.")
         # Дополнительные подсказки пользователю
         print("Убедитесь, что все числа являются натуральными (от 1) и не превышают 15.")
-        approved_missions = False
         return None
 
 
@@ -121,16 +122,9 @@ async def back(callback: CallbackQuery):
 @router.callback_query(F.data == "patent")
 async def show_patent_menu(callback: CallbackQuery):
     await callback.answer()
-    """filled_rows = count_filled_rows(worksheet)
-    if filled_rows == 1:
-        await callback.message.edit_text(
-            "Пока что здесь ничего нет, но вы можете первыми показать свои изобретения другим командам!",
-            reply_markup=zero_patent_kb_client)
-    else:
-        await callback.message.edit_text("Насадки / Страница 1", reply_markup=main_patent_kb_client)"""
     await callback.message.answer(
-        "Пока что здесь ничего нет, но вы можете первыми показать свои изобретения другим командам!",
-        reply_markup=zero_patent_kb_client)
+        "Выберите функцию:",
+        reply_markup=patent_kb_client)
 
 
 @router.callback_query(F.data == "publish_pt")
@@ -178,38 +172,6 @@ async def load_image(message: Message, state: FSMContext):
         "Пожалуйста, отправьте фото/видео вашей насадки. На фото насадка должна быть показана целиком, весь дизайн и функционал должны быть продемонстрированы")
 
 
-"""@router.message(Publish.media)
-async def photo_received(message: Message, state: FSMContext):
-    # Проверяем, содержит ли сообщение медиа
-    if not message.photo and not message.video:
-        await message.answer(
-            "Пожалуйста, отправьте фото/видео вашей насадки. На фото насадка должна быть показана целиком, весь дизайн и функционал должны быть продемонстрированы."
-        )
-        return
-
-    # Здесь будут храниться id фотографий и видео
-    images_ids, video_ids = [], []
-
-    # Если сообщение содержит фотографии
-    if message.photo:
-        for _photo in message.photo:
-            images_ids.append(_photo.file_id)
-
-    # Если сообщение содержит видео
-    if message.video:
-        video_ids.append(message.video.file_id)
-
-    # Сохраняем полученные id в состоянии
-    await state.update_data(images_ids=images_ids)
-    await state.update_data(video_ids=video_ids)
-
-    # Переходим к следующему состоянию
-    await state.set_state(Publish.caption)
-
-    # Отправляем одно сообщение о вводе названия
-    await message.answer("Введите название насадки.")"""
-
-
 # Асинхронная функция для окончательной обработки альбома
 async def _finalize_album_processing(bot_instance: Bot, chat_id: int, state: FSMContext, media_group_id: str):
     """
@@ -252,7 +214,7 @@ async def process_media_and_ask_caption(message: Message, state: FSMContext):
     chat_id = message.chat.id
     current_media_group_id = message.media_group_id
 
-    # 1. Проверка на НЕ-медиа сообщение
+    # Проверка на НЕ-медиа сообщение
     if not message.photo and not message.video:
         await message.answer(
             "Пожалуйста, отправьте фото/видео вашей насадки. На фото насадка должна быть показана целиком, весь дизайн и функционал должны быть продемонстрированы.")
@@ -260,7 +222,7 @@ async def process_media_and_ask_caption(message: Message, state: FSMContext):
 
     current_bot_instance = message.bot
 
-    # 2. Обработка ОДИНОЧНОГО фото/видео (не часть альбома)
+    # Обработка ОДИНОЧНОГО фото/видео (не часть альбома)
     # Если media_group_id отсутствует, это одиночное медиа
     if not current_media_group_id:
         images_ids = [message.photo[-1].file_id] if message.photo else []  # Берем только ID самой большой фотографии
@@ -272,12 +234,13 @@ async def process_media_and_ask_caption(message: Message, state: FSMContext):
 
         # Если было незавершенное ожидание альбома, отменяем его
         if chat_id in album_collector:
-            if album_collector[chat_id].get("processing_task") and not album_collector[chat_id]["processing_task"].done():
+            if album_collector[chat_id].get("processing_task") and not album_collector[chat_id][
+                "processing_task"].done():
                 album_collector[chat_id]["processing_task"].cancel()
             del album_collector[chat_id]  # Очищаем данные по альбому
         return
 
-    # 3. Обработка СООБЩЕНИЙ, ЯВЛЯЮЩИХСЯ ЧАСТЬЮ МЕДИАГРУППЫ (АЛЬБОМА)
+    # Обработка СООБЩЕНИЙ, ЯВЛЯЮЩИХСЯ ЧАСТЬЮ МЕДИАГРУППЫ (АЛЬБОМА)
 
     # Инициализируем или сбрасываем данные для нового альбома.
     # Инициализируем или сбрасываем данные для нового альбома/группы
@@ -314,6 +277,170 @@ async def process_media_and_ask_caption(message: Message, state: FSMContext):
     collector_data["processing_task"] = asyncio.create_task(
         _finalize_album_processing(current_bot_instance, chat_id, state, current_media_group_id)
     )
+
+
+PATENTS_PER_PAGE = 5  # Количество патентов на одной странице
+
+# --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ОТПРАВКИ СТРАНИЦЫ ПАТЕНТОВ ---
+async def send_patents_page(
+        chat_id: int,
+        bot_instance: Bot,
+        session: AsyncSession,
+        page_to_display: int,
+        message_to_edit: Optional[Message] = None  # Для редактирования сообщения с клавиатурой
+):
+    total_patents = await session.scalar(select(func.count(Patent.id)))
+    total_pages = (total_patents + PATENTS_PER_PAGE - 1) // PATENTS_PER_PAGE if total_patents > 0 else 1
+
+    # Корректировка номера страницы для зацикливания
+    if total_patents == 0:
+        page_to_display = 1
+    elif page_to_display < 1:
+        page_to_display = total_pages
+    elif page_to_display > total_pages:
+        page_to_display = 1
+
+    offset = (page_to_display - 1) * PATENTS_PER_PAGE
+
+    # Запрос патентов для текущей страницы, упорядоченных по created_at (самые старые первыми)
+    patents_query = await session.scalars(
+        select(Patent)
+        .order_by(Patent.created_at)
+        .offset(offset)
+        .limit(PATENTS_PER_PAGE)
+    )
+    patents_on_page = patents_query.all()
+
+    # Отправляем патенты
+    if not patents_on_page:
+        await bot_instance.send_message(chat_id, "Пока нет опубликованных изобретений. Будьте первым!", reply_markup=zero_patent_kb_client)
+        return None
+    else:
+        for patent in patents_on_page:
+            caption_text = (
+                f"**Название:** {patent.caption}\n"
+                f"**Описание:** {patent.description}\n"
+                f"**Миссии:** {patent.missions}\n"  # JSON-поле будет выведено как список Python
+                f"**Команда №:** {patent.team_number}\n"
+                f"**Одобрено:** {'Да' if patent.approved else 'Нет'}\n"
+                f"**Опубликовано:** {patent.created_at.strftime('%Y-%m-%d %H:%M')}"
+            )
+            media_group_items = []
+            if patent.image_ids:
+                for img_id in patent.image_ids:
+                    media_group_items.append(InputMediaPhoto(media=img_id))
+            if patent.video_ids:
+                for vid_id in patent.video_ids:
+                    media_group_items.append(InputMediaVideo(media=vid_id))
+
+            if not media_group_items:
+                # Если нет медиа, отправляем только текст
+                await bot_instance.send_message(
+                    chat_id,
+                    caption_text,
+                    parse_mode="Markdown"  # Используем Markdown для жирного текста
+                )
+            elif len(media_group_items) == 1:
+                # Если одно медиа, отправляем его с подписью
+                item = media_group_items[0]
+                if isinstance(item, InputMediaPhoto):
+                    await bot_instance.send_photo(
+                        chat_id,
+                        photo=item.media,
+                        caption=caption_text,
+                        parse_mode="Markdown"
+                    )
+                elif isinstance(item, InputMediaVideo):
+                    await bot_instance.send_video(
+                        chat_id,
+                        video=item.media,
+                        caption=caption_text,
+                        parse_mode="Markdown"
+                    )
+            else:
+                # Если несколько медиа, отправляем медиагруппу, а затем текст отдельно
+                # Важно: первая медиа в группе может иметь caption, остальные нет.
+                # Для упрощения: отправляем все медиа без caption, а затем caption отдельным сообщением.
+                # Это стандартная практика, так как общая подпись для media_group не предусмотрена API.
+                media_group_items[0].caption = caption_text  # Добавляем подпись к первому элементу группы
+                media_group_items[0].parse_mode = "Markdown"
+                await bot_instance.send_media_group(chat_id, media_group_items)
+                # await bot_instance.send_message(chat_id, caption_text, parse_mode="Markdown") # Можете отправлять отдельно, если не хотите к первому элементу
+
+            # Отправляем или редактируем клавиатуру навигации
+        reply_markup = get_patent_menu_keyboard(page_to_display, total_pages)
+        if message_to_edit:
+            # Пытаемся отредактировать существующее сообщение с клавиатурой
+            try:
+                await bot_instance.edit_message_reply_markup(
+                    chat_id=chat_id,
+                    message_id=message_to_edit.message_id,
+                    reply_markup=reply_markup
+                )
+                # await message_to_edit.edit_reply_markup(reply_markup=reply_markup) # можно так, если message_to_edit - это объект message
+            except Exception as e:
+                # Если не удалось отредактировать (например, сообщение слишком старое), отправляем новое
+                print(f"Error editing message reply markup: {e}. Sending new keyboard message.")
+                await bot_instance.send_message(chat_id, f"Страница {page_to_display}/{total_pages}",
+                                                reply_markup=reply_markup)
+        else:
+            # Если message_to_edit не передан (первый вход), отправляем новое сообщение с клавиатурой
+            await bot_instance.send_message(chat_id, f"Страница {page_to_display}/{total_pages}",
+                                            reply_markup=reply_markup)
+
+        return page_to_display  # Возвращаем фактический номер страницы
+
+
+@router.callback_query(F.data == "view_pt")  # Кнопка из главного меню
+async def view_patents_entry(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
+    await callback.answer()
+
+    current_bot_instance = callback.bot
+    chat_id = callback.message.chat.id
+
+    # Устанавливаем начальное состояние просмотра патентов
+    await state.set_state(PatentBrowsing.browsing_menu)
+    await state.update_data(current_page=1)  # Начинаем с первой страницы
+
+    # Отправляем первую страницу патентов и сохраняем ID сообщения с клавиатурой
+    displayed_page = await send_patents_page(
+        chat_id=chat_id,
+        bot_instance=current_bot_instance,
+        session=session,
+        page_to_display=1 # Начинаем с 1 страницы
+    )
+    await state.update_data(current_page=displayed_page) # Сохраняем фактическую страницу
+
+
+@router.callback_query(F.data.in_({"prev_page_pt", "next_page_pt", "select_page_pt"}), PatentBrowsing.browsing_menu)
+async def navigate_patents_pages(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
+    await callback.answer()
+
+    current_bot_instance = callback.bot
+    chat_id = callback.message.chat.id
+    current_page_data = await state.get_data()
+    current_page = current_page_data.get('current_page', 1) # Получаем текущую страницу
+
+    new_page = current_page
+    if callback.data == "prev_page_pt":
+        new_page -= 1
+    elif callback.data == "next_page_pt":
+        new_page += 1
+    elif callback.data == "select_page_pt":
+        # Если нажата кнопка с номером страницы, обычно она означает "перезагрузить текущую"
+        # Для более сложной логики выбора страницы по номеру, потребуется новое состояние
+        pass # new_page останется current_page
+
+    # Отправляем новую страницу патентов, редактируя предыдущее сообщение с клавиатурой
+    # Передаем callback.message, чтобы функция могла отредактировать его reply_markup
+    displayed_page = await send_patents_page(
+        chat_id=chat_id,
+        bot_instance=current_bot_instance,
+        session=session,
+        page_to_display=new_page,
+        message_to_edit=callback.message # Передаем сообщение, чтобы отредактировать его клавиатуру
+    )
+    await state.update_data(current_page=displayed_page) # Сохраняем актуальную страницу
 
 
 @router.message(Publish.caption)
@@ -383,7 +510,7 @@ async def description_received(message: Message, state: FSMContext):
             parse_mode="html"
         )
 
-    await state.set_state(Publish.confirm)
+    await state.set_state(state=Publish.confirm)
 
 
 @router.callback_query(F.data == "confirm_pt")
@@ -400,10 +527,12 @@ async def patent_sent(callback: CallbackQuery, state: FSMContext, session: Async
 
     # Проверка длины полей
     if len(caption) > 50:
-        await callback.message.answer("Название насадки слишком длинное (макс. 50 символов).", reply_markup=back_pt_client)
+        await callback.message.answer("Название насадки слишком длинное (макс. 50 символов).",
+                                      reply_markup=back_pt_client)
         return
     if len(description) > 250:
-        await callback.message.answer("Описание насадки слишком длинное (макс. 250 символов).", reply_markup=back_pt_client)
+        await callback.message.answer("Описание насадки слишком длинное (макс. 250 символов).",
+                                      reply_markup=back_pt_client)
         return
 
     try:
@@ -419,7 +548,8 @@ async def patent_sent(callback: CallbackQuery, state: FSMContext, session: Async
         )
 
         await session.commit()  # Фиксируем изменения в базе данных
-        await callback.message.answer("Насадка успешно сохранена и отправлена на модерацию! Вскоре она будет видна здесь в ближайшие дни :)")
+        await callback.message.answer(
+            "Насадка успешно сохранена и отправлена на модерацию! Вскоре она будет видна здесь в ближайшие дни :)")
         await state.clear()  # Очищаем состояние после успешной публикации
 
     except ValueError as ve:  # Отлавливаем ошибку, если пользователь не найден (хотя она не должна срабатывать, если пользователь уже зарегистрирован)
