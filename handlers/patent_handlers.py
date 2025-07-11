@@ -6,35 +6,18 @@ from typing import Dict, Optional
 from aiogram.types import CallbackQuery, Message, InputMediaPhoto, InputMediaVideo
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
-from sqlalchemy import select, func
+from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import User, Patent
 from keybords.patent_kb import zero_patent_kb_client, back_pt_client, confirm_pt_client, get_patent_menu_keyboard, \
-    patent_kb_client
+    patent_kb_client, get_input_page_keyboard, get_single_patent_view_keyboard, get_team_patents_list_keyboard, \
+    get_cancel_input_keyboard
 from keybords.keybord_client import kb_client
 import database.requests as rq
 from typing import Union, List, Tuple
 
-"""import gspread"""
-
 router = Router()
-"""gc = gspread.service_account(filename="credentials.json")
-spreadsheet = gc.open("FLLTelegramBot")
-worksheet = spreadsheet.worksheet("patent")
-
-
-def count_filled_rows(worksheet):
-    try:
-        all_rows = worksheet.get_all_values()
-        filled_rows_count = 0
-        for row in all_rows:
-            if any(cell.strip() for cell in row):
-                filled_rows_count += 1
-        return filled_rows_count
-    except Exception as e:
-        print(f"An error occured: {e}")
-        return 0"""
 
 approved_missions = False
 proceed_missions = None
@@ -50,27 +33,24 @@ class Publish(StatesGroup):
     description = State()
     confirm = State()
 
+
 class PatentBrowsing(StatesGroup):
     browsing_menu = State()
+    waiting_page_number = State()
+    waiting_mission_number = State()
+    waiting_team_number = State()
+    displaying_team_patents = State()
 
 
 def validate_and_process_numbers(data: Union[List[int], Tuple[int, ...]]) -> Union[List[int], None]:
-    """
-    Проверяет, является ли входной аргумент списком или кортежем натуральных чисел,
-    где каждое число находится в диапазоне от 1 до 15 включительно.
-
-    Args:
-        data: Входные данные, которые должны быть списком или кортежем целых чисел.
-
-    Returns:
-        Список чисел, если все условия соблюдены;
-        None, если входные данные не соответствуют условиям.
-    """
     if not isinstance(data, (list, tuple)):
         return None
 
+    # Используем set для удаления дубликатов, затем преобразуем обратно в список
+    unique_numbers = sorted(list(set(data)))  # Сортируем после удаления дубликатов
+
     processed_list = []
-    for item in data:
+    for item in unique_numbers:  # Итерируемся по уникальным и отсортированным числам
         # Проверяем, является ли элемент целым числом
         if not isinstance(item, int):
             return None
@@ -157,13 +137,432 @@ async def publish_attachment(callback: CallbackQuery, state: FSMContext, session
             reply_markup=back_pt_client)
 
 
+PATENTS_PER_PAGE = 5  # Количество патентов на одной странице
+
+
+# --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ОТПРАВКИ СТРАНИЦЫ ПАТЕНТОВ ---
+async def send_patents_page(
+        chat_id: int,
+        bot_instance: Bot,
+        session: AsyncSession,
+        page_to_display: int,
+        filter_condition=None,
+        message_to_edit: Optional[Message] = None  # Для редактирования сообщения с клавиатурой
+):
+    # Базовый фильтр: только одобренные патенты
+    base_filter = Patent.approved == True
+
+    # Комбинируем с дополнительным условием, если оно есть
+    final_filter = and_(base_filter, filter_condition) if filter_condition is not None else base_filter
+
+    total_patents = await session.scalar(select(func.count(Patent.id)).where(final_filter)) # Получаем общее количество одобренных патентов
+    total_pages = (total_patents + PATENTS_PER_PAGE - 1) // PATENTS_PER_PAGE if total_patents > 0 else 1
+
+    # Корректировка номера страницы для зацикливания
+    if total_patents == 0:
+        page_to_display = 1
+    elif page_to_display < 1:
+        page_to_display = total_pages
+    elif page_to_display > total_pages:
+        page_to_display = 1
+
+    offset = (page_to_display - 1) * PATENTS_PER_PAGE
+
+    # Запрос патентов для текущей страницы, упорядоченных по created_at (самые старые первыми)
+    patents_query = await session.scalars(
+        select(Patent)
+        .where(Patent.approved == True)
+        .order_by(Patent.created_at)
+        .offset(offset)
+        .limit(PATENTS_PER_PAGE)
+    )
+    patents_on_page = patents_query.all()
+
+    # Отправляем патенты
+    if not patents_on_page:
+        await bot_instance.send_message(chat_id, "Пока нет опубликованных насадок. Будьте первым!",
+                                        reply_markup=zero_patent_kb_client)
+        return None
+    else:
+        for patent in patents_on_page:
+            caption_text = (
+                f"**Название:** {patent.caption}\n"
+                f"**Описание:** {patent.description}\n"
+                f"**Миссии:** {patent.missions}\n"  # JSON-поле будет выведено как список Python
+                f"**Команда №:** {patent.team_number}\n"
+                f"**Опубликовано:** {patent.created_at.strftime('%Y-%m-%d %H:%M')}"
+            )
+            media_group_items = []
+            if patent.image_ids:
+                for img_id in patent.image_ids:
+                    media_group_items.append(InputMediaPhoto(media=img_id))
+            if patent.video_ids:
+                for vid_id in patent.video_ids:
+                    media_group_items.append(InputMediaVideo(media=vid_id))
+
+            if not media_group_items:
+                # Если нет медиа, отправляем только текст
+                await bot_instance.send_message(
+                    chat_id,
+                    caption_text,
+                    parse_mode="Markdown"  # Используем Markdown для жирного текста
+                )
+            elif len(media_group_items) == 1:
+                # Если одно медиа, отправляем его с подписью
+                item = media_group_items[0]
+                if isinstance(item, InputMediaPhoto):
+                    await bot_instance.send_photo(
+                        chat_id,
+                        photo=item.media,
+                        caption=caption_text,
+                        parse_mode="Markdown"
+                    )
+                elif isinstance(item, InputMediaVideo):
+                    await bot_instance.send_video(
+                        chat_id,
+                        video=item.media,
+                        caption=caption_text,
+                        parse_mode="Markdown"
+                    )
+            else:
+                # Если несколько медиа, отправляем медиагруппу, а затем текст отдельно
+                # Важно: первая медиа в группе может иметь caption, остальные нет.
+                # Для упрощения: отправляем все медиа без caption, а затем caption отдельным сообщением.
+                # Это стандартная практика, так как общая подпись для media_group не предусмотрена API.
+                media_group_items[0].caption = caption_text  # Добавляем подпись к первому элементу группы
+                media_group_items[0].parse_mode = "Markdown"
+                await bot_instance.send_media_group(chat_id, media_group_items)
+                # await bot_instance.send_message(chat_id, caption_text, parse_mode="Markdown") # Можете отправлять отдельно, если не хотите к первому элементу
+
+            # Отправляем или редактируем клавиатуру навигации
+        reply_markup = get_patent_menu_keyboard(page_to_display, total_pages)
+        if message_to_edit:
+            # Пытаемся отредактировать существующее сообщение с клавиатурой
+            try:
+                await bot_instance.edit_message_reply_markup(
+                    chat_id=chat_id,
+                    message_id=message_to_edit.message_id,
+                    reply_markup=reply_markup
+                )
+                # await message_to_edit.edit_reply_markup(reply_markup=reply_markup) # можно так, если message_to_edit - это объект message
+            except Exception as e:
+                # Если не удалось отредактировать (например, сообщение слишком старое), отправляем новое
+                print(f"Error editing message reply markup: {e}. Sending new keyboard message.")
+                await bot_instance.send_message(chat_id, f"Страница {page_to_display}/{total_pages}",
+                                                reply_markup=reply_markup)
+        else:
+            # Если message_to_edit не передан (первый вход), отправляем новое сообщение с клавиатурой
+            await bot_instance.send_message(chat_id, f"Страница {page_to_display}/{total_pages}",
+                                            reply_markup=reply_markup)
+
+        return page_to_display  # Возвращаем фактический номер страницы
+
+
+@router.callback_query(F.data == "view_pt")  # Кнопка из главного меню
+async def view_patents_entry(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
+    await callback.answer()
+
+    current_bot_instance = callback.bot
+    chat_id = callback.message.chat.id
+
+    # Устанавливаем начальное состояние просмотра патентов
+    await state.set_state(PatentBrowsing.browsing_menu)
+    await state.update_data(current_page=1, current_filter=None)  # Начинаем с первой страницы
+
+    # Отправляем первую страницу патентов и сохраняем ID сообщения с клавиатурой
+    displayed_page = await send_patents_page(
+        chat_id=chat_id,
+        bot_instance=current_bot_instance,
+        session=session,
+        page_to_display=1,
+        filter_condition=None
+    )
+    await state.update_data(current_page=displayed_page)  # Сохраняем фактическую страницу
+
+
+@router.callback_query(F.data.in_({"prev_page_pt", "next_page_pt", "select_page_pt"}), PatentBrowsing.browsing_menu)
+async def navigate_patents_pages(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
+    await callback.answer()
+
+    current_bot_instance = callback.bot
+    chat_id = callback.message.chat.id
+    current_page_data = await state.get_data()
+    current_page = current_page_data.get('current_page', 1)  # Получаем текущую страницу
+    current_filter = current_page_data.get('current_filter') # Получаем текущий фильтр, если есть
+
+    if callback.data == "select_page_pt":
+        await state.set_state(PatentBrowsing.waiting_page_number)
+        await callback.message.answer("Введите номер страницы, на которую хотите перейти:",
+                                      reply_markup=get_input_page_keyboard())
+        return
+
+    new_page = current_page
+    if callback.data == "prev_page_pt":
+        new_page -= 1
+    elif callback.data == "next_page_pt":
+        new_page += 1
+
+    displayed_page = await send_patents_page(
+        chat_id=chat_id,
+        bot_instance=current_bot_instance,
+        session=session,
+        page_to_display=new_page,
+        filter_condition=current_filter,
+        message_to_edit=callback.message  # Передаем текущее сообщение для редактирования клавиатуры
+    )
+    await state.update_data(current_page=displayed_page)  # Сохраняем актуальную страницу
+
+
+@router.message(PatentBrowsing.waiting_page_number)
+async def process_page_number_input(message: Message, state: FSMContext, session: AsyncSession):
+    current_bot_instance = message.bot
+    chat_id = message.chat.id
+    current_page_data = await state.get_data()
+    current_filter = current_page_data.get('current_filter')  # Получаем текущий фильтр
+
+    try:
+        requested_page = int(message.text)
+    except ValueError:
+        await message.answer("Пожалуйста, введите корректный номер страницы (целое число).")
+        return
+
+    base_filter = Patent.approved == True
+    final_filter = and_(base_filter, current_filter) if current_filter is not None else base_filter
+
+    # Получаем общее количество одобренных патентов для проверки валидности введенной страницы
+    total_patents = await session.scalar(select(func.count(Patent.id)).where(final_filter))
+    total_pages = (total_patents + PATENTS_PER_PAGE - 1) // PATENTS_PER_PAGE if total_patents > 0 else 1
+
+    if not (1 <= requested_page <= total_pages):
+        await message.answer(
+            f"Страница с номером {requested_page} не существует. Всего страниц: {total_pages}. Пожалуйста, введите номер страницы от 1 до {total_pages}.")
+        return
+
+    # Если номер страницы валиден, переходим на неё
+    await state.set_state(PatentBrowsing.browsing_menu)  # Возвращаем пользователя в состояние просмотра
+    displayed_page = await send_patents_page(
+        chat_id=chat_id,
+        bot_instance=current_bot_instance,
+        session=session,
+        page_to_display=requested_page
+        # message_to_edit здесь не передаем, так как это новое сообщение после ввода числа
+    )
+    await state.update_data(current_page=displayed_page)
+
+
+@router.callback_query(F.data == "cancel_input_pt", PatentBrowsing.waiting_page_number)
+@router.callback_query(F.data == "cancel_input_pt", PatentBrowsing.waiting_mission_number)
+@router.callback_query(F.data == "cancel_input_pt", PatentBrowsing.waiting_team_number)
+async def cancel_any_input(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
+    await callback.answer()
+
+    current_bot_instance = callback.bot
+    chat_id = callback.message.chat.id
+    current_page_data = await state.get_data()
+    current_page = current_page_data.get('current_page', 1)
+    current_filter = current_page_data.get('current_filter')  # Сохраняем текущий фильтр
+
+    await state.set_state(PatentBrowsing.browsing_menu)  # Возвращаем в основное меню просмотра
+
+    await callback.message.delete()  # Удаляем сообщение "Введите номер..."
+
+    displayed_page = await send_patents_page(
+        chat_id=chat_id,
+        bot_instance=current_bot_instance,
+        session=session,
+        page_to_display=current_page,
+        filter_condition=current_filter  # Возвращаемся с тем же фильтром
+    )
+    await state.update_data(current_page=displayed_page)
+
+
+
+# --- ПОИСК ПО НОМЕРУ МИССИИ ---
+@router.callback_query(F.data == "find_by_mission_pt", PatentBrowsing.browsing_menu)
+async def find_by_mission_entry(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.set_state(PatentBrowsing.waiting_mission_number)
+    await callback.message.answer("Введите номер миссии (от 1 до 15):", reply_markup=get_cancel_input_keyboard())
+
+
+@router.message(PatentBrowsing.waiting_mission_number)
+async def process_mission_number_input(message: Message, state: FSMContext, session: AsyncSession):
+    current_bot_instance = message.bot
+    chat_id = message.chat.id
+
+    try:
+        mission_number = int(message.text)
+        if not (1 <= mission_number <= 15):
+            raise ValueError("Номер миссии должен быть от 1 до 15.")
+    except ValueError as e:
+        await message.answer(f"Некорректный номер миссии: {e}. Пожалуйста, введите число от 1 до 15.")
+        return
+
+    # Условие поиска: Patent.missions (JSONB/JSON) содержит mission_number
+    # Для SQLite, JSON-поле обрабатывается как строка, и contains работает как LIKE '%"value"%'.
+    # В SQLAlchemy для JSON-типа есть специальные операторы.
+    # Если missions объявлен как Mapped[List[int]] = mapped_column(JSON), то используем .contains()
+    mission_filter = Patent.missions.contains([mission_number])  # Ищет [1] в [1,2,3]
+
+    await state.set_state(PatentBrowsing.browsing_menu)  # Возвращаем в основное меню просмотра
+    await state.update_data(current_filter=mission_filter, current_page=1)  # Устанавливаем фильтр и сбрасываем страницу
+
+    displayed_page = await send_patents_page(
+        chat_id=chat_id,
+        bot_instance=current_bot_instance,
+        session=session,
+        page_to_display=1,
+        filter_condition=mission_filter  # Передаем фильтр по миссии
+    )
+    await state.update_data(current_page=displayed_page)
+
+
+# --- ПОИСК ПО НОМЕРУ КОМАНДЫ ---
+@router.callback_query(F.data == "find_by_team_pt", PatentBrowsing.browsing_menu)
+async def find_by_team_entry(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.set_state(PatentBrowsing.waiting_team_number)
+    await callback.message.answer("Введите номер команды:", reply_markup=get_cancel_input_keyboard())
+
+
+@router.message(PatentBrowsing.waiting_team_number)
+async def process_team_number_input(message: Message, state: FSMContext, session: AsyncSession):
+    current_bot_instance = message.bot
+    chat_id = message.chat.id
+
+    try:
+        team_number = int(message.text)
+        if team_number <= 0: # Номер команды должен быть положительным
+            raise ValueError("Номер команды должен быть положительным числом.")
+    except ValueError as e:
+        await message.answer(f"Некорректный номер команды: {e}. Пожалуйста, введите целое число.")
+        return
+
+    # Запрос всех одобренных патентов для данной команды
+    team_patents_query = await session.scalars(
+        select(Patent)
+        .where(Patent.team_number == team_number, Patent.approved == True)
+        .order_by(Patent.created_at)
+    )
+    team_patents = team_patents_query.all()
+
+    await state.set_state(PatentBrowsing.displaying_team_patents) # Устанавливаем новое состояние
+    await state.update_data(current_team_id=team_number) # Можно сохранить номер команды для отладки
+
+    if not team_patents:
+        await message.answer(f"Для команды №{team_number} пока нет одобренных изобретений.")
+        # Возвращаем пользователя в общее меню просмотра после неудачного поиска
+        await state.set_state(PatentBrowsing.browsing_menu)
+        current_page_data = await state.get_data()
+        current_page = current_page_data.get('current_page', 1)
+        current_filter = current_page_data.get('current_filter') # Сохраняем фильтр
+        await send_patents_page(
+            chat_id=chat_id,
+            bot_instance=current_bot_instance,
+            session=session,
+            page_to_display=current_page,
+            filter_condition=current_filter # Возвращаемся с тем же фильтром
+        )
+        return
+
+    # Отправляем клавиатуру со списком патентов
+    reply_markup = get_team_patents_list_keyboard(team_patents)
+    await message.answer(f"Изобретения команды №{team_number}:", reply_markup=reply_markup)
+
+
+@router.callback_query(F.data.startswith("view_patent_id_"), PatentBrowsing.displaying_team_patents)
+async def view_specific_team_patent(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
+    await callback.answer()
+
+    patent_id = int(callback.data.split("_")[-1])
+
+    patent = await session.scalar(select(Patent).where(Patent.id == patent_id, Patent.approved == True))
+
+    if not patent:
+        await callback.message.answer("Изобретение не найдено или не одобрено.")
+        return
+
+    # Отправляем информацию об одном патенте
+    caption_text = (
+        f"**Название:** {patent.caption}\n"
+        f"**Описание:** {patent.description}\n"
+        f"**Миссии:** {', '.join(map(str, patent.missions))}\n"
+        f"**Команда №:** {patent.team_number}\n"
+        f"**Опубликовано:** {patent.created_at.strftime('%Y-%m-%d %H:%M')}"
+    )
+
+    media_group_items = []
+    if patent.image_ids:
+        for img_id in patent.image_ids:
+            media_group_items.append(InputMediaPhoto(media=img_id))
+    if patent.video_ids:
+        for vid_id in patent.video_ids:
+            media_group_items.append(InputMediaVideo(media=vid_id))
+
+    if not media_group_items:
+        await callback.message.answer(caption_text, parse_mode="Markdown", reply_markup=get_single_patent_view_keyboard())
+    elif len(media_group_items) == 1:
+        item = media_group_items[0]
+        if isinstance(item, InputMediaPhoto):
+            await callback.bot.send_photo(callback.message.chat.id, photo=item.media, caption=caption_text, parse_mode="Markdown", reply_markup=get_single_patent_view_keyboard())
+        elif isinstance(item, InputMediaVideo):
+            await callback.bot.send_video(callback.message.chat.id, video=item.media, caption=caption_text, parse_mode="Markdown", reply_markup=get_single_patent_view_keyboard())
+    else:
+        media_group_items[0].caption = caption_text
+        media_group_items[0].parse_mode = "Markdown"
+        await callback.bot.send_media_group(callback.message.chat.id, media_group_items)
+        await callback.message.answer("Нажмите, чтобы вернуться:", reply_markup=get_single_patent_view_keyboard())
+
+
+# --- НАЗАД К ОБЩЕМУ ПРОСМОТРУ ИЗОБРЕТЕНИЙ ---
+@router.callback_query(F.data == "back_to_general_browsing_pt", PatentBrowsing.displaying_team_patents)
+@router.callback_query(F.data == "back_to_general_browsing_pt") # Общий фильтр для возврата из любого места поиска
+async def back_to_general_browsing(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
+    await callback.answer()
+
+    current_bot_instance = callback.bot
+    chat_id = callback.message.chat.id
+
+    await state.set_state(PatentBrowsing.browsing_menu) # Возвращаемся в основное меню просмотра
+    await state.update_data(current_page=1, current_filter=None) # Сбрасываем все фильтры и возвращаемся на 1-ю страницу
+
+    # Удаляем сообщение с текущей клавиатурой/списком
+    try:
+        await callback.message.delete()
+    except Exception as e:
+        print(f"Failed to delete message: {e}") # Сообщение могло быть слишком старым или уже удалено
+
+    displayed_page = await send_patents_page(
+        chat_id=chat_id,
+        bot_instance=current_bot_instance,
+        session=session,
+        page_to_display=1,
+        filter_condition=None # Без фильтра; общий список одобренных патентов
+    )
+    await state.update_data(current_page=displayed_page)
+
+
+# --- ВОЗВРАТ В ГЛАВНОЕ МЕНЮ ИЗ ЛЮБОГО РЕЖИМА ПРОСМОТРА ---
+@router.callback_query(F.data == "menu_pt", PatentBrowsing.browsing_menu)
+@router.callback_query(F.data == "menu_pt", PatentBrowsing.displaying_team_patents) # Из всех состояний просмотра
+async def return_to_main_menu_from_patents(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.clear()
+
+    await callback.message.answer("Вы вернулись в главное меню.", reply_markup=kb_client)
+
+
+
+# -- Хэндлеры для публикации насадки --
+
+
 @router.message(Publish.mission_number)
-async def load_image(message: Message, state: FSMContext):
+async def process_mission_number(message: Message, state: FSMContext):
     global proceed_missions
     proceed_missions = get_missions_input_and_validate(message.text)
     if proceed_missions is None:
         await message.answer(
-            "Некорректный ввод. Отправьте номера миссий через запятую. Убедитесь, что все номера миссий натуральные и не больше 15.")
+            "Неверный формат или значения номеров миссий. Введите числа от 1 до 15, через запятую с пробелом (например: 1, 5, 10).")
         return
 
     await state.update_data(missions=proceed_missions)
@@ -277,170 +676,6 @@ async def process_media_and_ask_caption(message: Message, state: FSMContext):
     collector_data["processing_task"] = asyncio.create_task(
         _finalize_album_processing(current_bot_instance, chat_id, state, current_media_group_id)
     )
-
-
-PATENTS_PER_PAGE = 5  # Количество патентов на одной странице
-
-# --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ОТПРАВКИ СТРАНИЦЫ ПАТЕНТОВ ---
-async def send_patents_page(
-        chat_id: int,
-        bot_instance: Bot,
-        session: AsyncSession,
-        page_to_display: int,
-        message_to_edit: Optional[Message] = None  # Для редактирования сообщения с клавиатурой
-):
-    total_patents = await session.scalar(select(func.count(Patent.id)))
-    total_pages = (total_patents + PATENTS_PER_PAGE - 1) // PATENTS_PER_PAGE if total_patents > 0 else 1
-
-    # Корректировка номера страницы для зацикливания
-    if total_patents == 0:
-        page_to_display = 1
-    elif page_to_display < 1:
-        page_to_display = total_pages
-    elif page_to_display > total_pages:
-        page_to_display = 1
-
-    offset = (page_to_display - 1) * PATENTS_PER_PAGE
-
-    # Запрос патентов для текущей страницы, упорядоченных по created_at (самые старые первыми)
-    patents_query = await session.scalars(
-        select(Patent)
-        .order_by(Patent.created_at)
-        .offset(offset)
-        .limit(PATENTS_PER_PAGE)
-    )
-    patents_on_page = patents_query.all()
-
-    # Отправляем патенты
-    if not patents_on_page:
-        await bot_instance.send_message(chat_id, "Пока нет опубликованных изобретений. Будьте первым!", reply_markup=zero_patent_kb_client)
-        return None
-    else:
-        for patent in patents_on_page:
-            caption_text = (
-                f"**Название:** {patent.caption}\n"
-                f"**Описание:** {patent.description}\n"
-                f"**Миссии:** {patent.missions}\n"  # JSON-поле будет выведено как список Python
-                f"**Команда №:** {patent.team_number}\n"
-                f"**Одобрено:** {'Да' if patent.approved else 'Нет'}\n"
-                f"**Опубликовано:** {patent.created_at.strftime('%Y-%m-%d %H:%M')}"
-            )
-            media_group_items = []
-            if patent.image_ids:
-                for img_id in patent.image_ids:
-                    media_group_items.append(InputMediaPhoto(media=img_id))
-            if patent.video_ids:
-                for vid_id in patent.video_ids:
-                    media_group_items.append(InputMediaVideo(media=vid_id))
-
-            if not media_group_items:
-                # Если нет медиа, отправляем только текст
-                await bot_instance.send_message(
-                    chat_id,
-                    caption_text,
-                    parse_mode="Markdown"  # Используем Markdown для жирного текста
-                )
-            elif len(media_group_items) == 1:
-                # Если одно медиа, отправляем его с подписью
-                item = media_group_items[0]
-                if isinstance(item, InputMediaPhoto):
-                    await bot_instance.send_photo(
-                        chat_id,
-                        photo=item.media,
-                        caption=caption_text,
-                        parse_mode="Markdown"
-                    )
-                elif isinstance(item, InputMediaVideo):
-                    await bot_instance.send_video(
-                        chat_id,
-                        video=item.media,
-                        caption=caption_text,
-                        parse_mode="Markdown"
-                    )
-            else:
-                # Если несколько медиа, отправляем медиагруппу, а затем текст отдельно
-                # Важно: первая медиа в группе может иметь caption, остальные нет.
-                # Для упрощения: отправляем все медиа без caption, а затем caption отдельным сообщением.
-                # Это стандартная практика, так как общая подпись для media_group не предусмотрена API.
-                media_group_items[0].caption = caption_text  # Добавляем подпись к первому элементу группы
-                media_group_items[0].parse_mode = "Markdown"
-                await bot_instance.send_media_group(chat_id, media_group_items)
-                # await bot_instance.send_message(chat_id, caption_text, parse_mode="Markdown") # Можете отправлять отдельно, если не хотите к первому элементу
-
-            # Отправляем или редактируем клавиатуру навигации
-        reply_markup = get_patent_menu_keyboard(page_to_display, total_pages)
-        if message_to_edit:
-            # Пытаемся отредактировать существующее сообщение с клавиатурой
-            try:
-                await bot_instance.edit_message_reply_markup(
-                    chat_id=chat_id,
-                    message_id=message_to_edit.message_id,
-                    reply_markup=reply_markup
-                )
-                # await message_to_edit.edit_reply_markup(reply_markup=reply_markup) # можно так, если message_to_edit - это объект message
-            except Exception as e:
-                # Если не удалось отредактировать (например, сообщение слишком старое), отправляем новое
-                print(f"Error editing message reply markup: {e}. Sending new keyboard message.")
-                await bot_instance.send_message(chat_id, f"Страница {page_to_display}/{total_pages}",
-                                                reply_markup=reply_markup)
-        else:
-            # Если message_to_edit не передан (первый вход), отправляем новое сообщение с клавиатурой
-            await bot_instance.send_message(chat_id, f"Страница {page_to_display}/{total_pages}",
-                                            reply_markup=reply_markup)
-
-        return page_to_display  # Возвращаем фактический номер страницы
-
-
-@router.callback_query(F.data == "view_pt")  # Кнопка из главного меню
-async def view_patents_entry(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
-    await callback.answer()
-
-    current_bot_instance = callback.bot
-    chat_id = callback.message.chat.id
-
-    # Устанавливаем начальное состояние просмотра патентов
-    await state.set_state(PatentBrowsing.browsing_menu)
-    await state.update_data(current_page=1)  # Начинаем с первой страницы
-
-    # Отправляем первую страницу патентов и сохраняем ID сообщения с клавиатурой
-    displayed_page = await send_patents_page(
-        chat_id=chat_id,
-        bot_instance=current_bot_instance,
-        session=session,
-        page_to_display=1 # Начинаем с 1 страницы
-    )
-    await state.update_data(current_page=displayed_page) # Сохраняем фактическую страницу
-
-
-@router.callback_query(F.data.in_({"prev_page_pt", "next_page_pt", "select_page_pt"}), PatentBrowsing.browsing_menu)
-async def navigate_patents_pages(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
-    await callback.answer()
-
-    current_bot_instance = callback.bot
-    chat_id = callback.message.chat.id
-    current_page_data = await state.get_data()
-    current_page = current_page_data.get('current_page', 1) # Получаем текущую страницу
-
-    new_page = current_page
-    if callback.data == "prev_page_pt":
-        new_page -= 1
-    elif callback.data == "next_page_pt":
-        new_page += 1
-    elif callback.data == "select_page_pt":
-        # Если нажата кнопка с номером страницы, обычно она означает "перезагрузить текущую"
-        # Для более сложной логики выбора страницы по номеру, потребуется новое состояние
-        pass # new_page останется current_page
-
-    # Отправляем новую страницу патентов, редактируя предыдущее сообщение с клавиатурой
-    # Передаем callback.message, чтобы функция могла отредактировать его reply_markup
-    displayed_page = await send_patents_page(
-        chat_id=chat_id,
-        bot_instance=current_bot_instance,
-        session=session,
-        page_to_display=new_page,
-        message_to_edit=callback.message # Передаем сообщение, чтобы отредактировать его клавиатуру
-    )
-    await state.update_data(current_page=displayed_page) # Сохраняем актуальную страницу
 
 
 @router.message(Publish.caption)
