@@ -6,7 +6,7 @@ from typing import Dict, Optional
 from aiogram.types import CallbackQuery, Message, InputMediaPhoto, InputMediaVideo
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import User, Patent
@@ -150,6 +150,7 @@ async def send_patents_page(
         message_to_edit: Optional[Message] = None  # Для редактирования сообщения с клавиатурой
 ):
     # Базовый фильтр: только одобренные патенты
+    print(f"DEBUG: send_patents_page received filter: {filter_condition}")
     base_filter = Patent.approved == True
 
     # Комбинируем с дополнительным условием, если оно есть
@@ -171,7 +172,7 @@ async def send_patents_page(
     # Запрос патентов для текущей страницы, упорядоченных по created_at (самые старые первыми)
     patents_query = await session.scalars(
         select(Patent)
-        .where(Patent.approved == True)
+        .where(final_filter)
         .order_by(Patent.created_at)
         .offset(offset)
         .limit(PATENTS_PER_PAGE)
@@ -402,7 +403,10 @@ async def process_mission_number_input(message: Message, state: FSMContext, sess
     # Для SQLite, JSON-поле обрабатывается как строка, и contains работает как LIKE '%"value"%'.
     # В SQLAlchemy для JSON-типа есть специальные операторы.
     # Если missions объявлен как Mapped[List[int]] = mapped_column(JSON), то используем .contains()
-    mission_filter = Patent.missions.contains([mission_number])  # Ищет [1] в [1,2,3]
+    mission_filter = text(
+        f"EXISTS (SELECT 1 FROM json_each(patents.missions) WHERE json_each.value = {mission_number})") # Ищет [1] в [1,2,3]
+    print(f"DEBUG: mission_filter generated (RAW SQL): {mission_filter}")
+
 
     await state.set_state(PatentBrowsing.browsing_menu)  # Возвращаем в основное меню просмотра
     await state.update_data(current_filter=mission_filter, current_page=1)  # Устанавливаем фильтр и сбрасываем страницу
