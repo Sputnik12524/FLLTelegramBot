@@ -55,7 +55,7 @@ def validate_and_process_numbers(data: Union[List[int], Tuple[int, ...]]) -> Uni
 
 
 def get_missions_input_and_validate(missions):
-    """Преобразует строку с номерами миссий в список и валидирует."""
+    """Преобразует строку с номерами миссий в список и проверяет его на валидность."""
     str_numbers = missions.split(", ")
     numbers_for_validation = []
     for s_num in str_numbers:
@@ -466,7 +466,7 @@ async def process_mission_number(message: Message, state: FSMContext):
 
 
 async def _finalize_album_processing(bot_instance: Bot, chat_id: int, state: FSMContext, media_group_id: str):
-    """Финализирует сбор медиа из альбома и переводит пользователя к вводу названия."""
+    """Собирает медиа из альбома и переводит пользователя к вводу названия."""
     try:
         await asyncio.sleep(ALBUM_PROCESSING_DELAY)
         if chat_id in album_collector and album_collector[chat_id]["media_group_id"] == media_group_id:
