@@ -8,6 +8,7 @@ from keybords import kb_client
 from handlers.handlers import router as handlers_router
 from handlers.patent_handlers import router as patent_router
 from admins_panel.admin_keyboard import router as admin_router
+from records.record_handler import router as record_router
 from database.engine import proceed_schemas, async_session_factory
 from database.middleware import DbSessionMiddleware
 from database.models import User
@@ -49,11 +50,12 @@ async def main():
     dp.update.middleware(DbSessionMiddleware(session_pool=async_session_factory))
     print("Middleware для сессий БД успешно зарегистрировано.")
 
-    # ключение роутеров
+    # Включение роутеров
     dp.include_routers(
         handlers_router,
         patent_router,
-        admin_router
+        admin_router,
+        record_router
     )
     print("Роутеры включены в диспетчер.")
     await dp.start_polling(bot)

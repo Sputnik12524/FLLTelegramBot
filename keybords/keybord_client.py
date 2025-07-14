@@ -18,7 +18,7 @@ b4 = InlineKeyboardButton(
 )
 b5 = InlineKeyboardButton(
     text="Актуальный рекорд России",
-    callback_data="record"
+    callback_data="records"
 )
 b6 = InlineKeyboardButton(
     text="Калькулятор миссий",

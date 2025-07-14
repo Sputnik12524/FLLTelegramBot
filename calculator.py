@@ -40,7 +40,7 @@ class FLLCalculator:
         buttons.append(control_buttons)
         
         # Изменяем callback_data для кнопки "Назад"
-        back_button = [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="calc_back_to_main")]
+        back_button = [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu_pt")]
         buttons.append(back_button)
         
         return InlineKeyboardMarkup(inline_keyboard=buttons)

@@ -1,11 +1,12 @@
 from aiogram import Router, F
-from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
 from database.models import User, UserTeams
 from database.engine import async_session_factory
 import os
+from sqlalchemy.ext.asyncio import async_session
 
 # Пароль для админ-панели
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
@@ -23,11 +24,24 @@ def get_admin_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="👥 Список команд", callback_data="admin_teams")],
+        [InlineKeyboardButton(text="🏆 Проверка рекордов", callback_data="admin_records")],
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")],
         [InlineKeyboardButton(text="🗑 Очистить данные", callback_data="admin_clear")],
         [InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_refresh")],
         [InlineKeyboardButton(text="❌ Закрыть панель", callback_data="admin_close")]
     ])
+
+def get_admin_record_review_keyboard(record_id):
+    """Клавиатура для админа для проверки рекорда"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_record_{record_id}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_record_{record_id}")
+        ],
+        [InlineKeyboardButton(text="💬 Запросить дополнительную информацию", callback_data=f"request_info_{record_id}")],
+        [InlineKeyboardButton(text="📊 Детали рекорда", callback_data=f"record_details_{record_id}")]
+    ])
+    return keyboard
 
 def get_back_to_admin_keyboard():
     """Создает кнопку возврата к админ-панели"""
@@ -35,12 +49,71 @@ def get_back_to_admin_keyboard():
         [InlineKeyboardButton(text="⬅️ Назад к панели", callback_data="admin_back")]
     ])
 
-def get_confirm_keyboard():
-    """Создает клавиатуру подтверждения"""
+def get_records_filter_keyboard():
+    """Клавиатура для фильтрации рекордов"""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Да", callback_data="admin_confirm_yes")],
-        [InlineKeyboardButton(text="❌ Нет", callback_data="admin_confirm_no")]
+        [InlineKeyboardButton(text="⏳ На проверке", callback_data="admin_records_pending")],
+        [InlineKeyboardButton(text="✅ Одобренные", callback_data="admin_records_approved")],
+        [InlineKeyboardButton(text="❌ Отклоненные", callback_data="admin_records_rejected")],
+        [InlineKeyboardButton(text="📋 Все рекорды", callback_data="admin_records_all")],
+        [InlineKeyboardButton(text="⬅️ Назад к панели", callback_data="admin_back")]
     ])
+
+@router.callback_query(F.data == "admin_records")
+async def show_admin_records_menu(callback: CallbackQuery):
+    """Показать меню проверки рекордов"""
+    pending_count = len([r for r in submitted_records if r['status'] == 'pending'])
+    approved_count = len([r for r in submitted_records if r['status'] == 'approved'])
+    rejected_count = len([r for r in submitted_records if r['status'] == 'rejected'])
+    total_count = len(submitted_records)
+    
+    records_text = (
+        "🏆 **УПРАВЛЕНИЕ РЕКОРДАМИ**\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📊 **Статистика рекордов:**\n"
+        f"⏳ На проверке: **{pending_count}**\n"
+        f"✅ Одобренные: **{approved_count}**\n"
+        f"❌ Отклоненные: **{rejected_count}**\n"
+        f"📋 Всего: **{total_count}**\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Выберите категорию для просмотра:"
+    )
+    
+    await callback.message.edit_text(
+        records_text,
+        reply_markup=get_records_filter_keyboard()
+    )
+
+@router.callback_query(F.data == "admin_records_pending")
+async def show_pending_records(callback: CallbackQuery):
+    """Показать рекорды на проверке"""
+    pending_records = [r for r in submitted_records if r['status'] == 'pending']
+    
+    if not pending_records:
+        await callback.message.edit_text(
+            "⏳ **РЕКОРДЫ НА ПРОВЕРКЕ**\n\n"
+            "📭 Нет рекордов, ожидающих проверки.",
+            reply_markup=get_back_to_admin_keyboard()
+        )
+        return
+    
+    records_text = (
+        "⏳ **РЕКОРДЫ НА ПРОВЕРКЕ**\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    )
+    
+    for i, record in enumerate(pending_records[:5], 1):  # Показываем первые 5
+        records_text += (
+            f"**{i}. {record['first_name']}** - {record['score']} очков\n"
+            f"   📅 {record['date']} | ⏰ {record['submission_time']}\n"
+            f"   🆔 `{record['id']}`\n\n"
+        )
+    
+    if len(pending_records) > 5:
+        records_text += f"... и еще {len(pending_records) - 5} рекордов\n\n"
+    
+    records_text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n💡 Нажмите на ID рекорда для детального просмотра"
+    
 
 @router.message(Command('admin'))
 async def admin_login(message: Message, state: FSMContext):
@@ -181,3 +254,49 @@ async def admin_close_panel(callback: CallbackQuery):
 async def test_admin_router(message: Message):
     """Тестовый обработчик для проверки работы админ-роутера"""
     await message.answer("✅ Админ-роутер работает!")
+
+def get_admin_record_review_keyboard(record_id):
+    """Клавиатура для админа для проверки рекорда"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_record_{record_id}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_record_{record_id}")
+        ],
+        [InlineKeyboardButton(text="💬 Запросить дополнительную информацию", callback_data=f"request_info_{record_id}")],
+        [InlineKeyboardButton(text="📊 Детали рекорда", callback_data=f"record_details_{record_id}")]
+    ])
+    return keyboard
+
+def get_record_status_keyboard():
+    """Клавиатура для просмотра статуса рекордов"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⏳ На проверке", callback_data="records_pending")],
+        [InlineKeyboardButton(text="✅ Одобренные", callback_data="records_approved")],
+        [InlineKeyboardButton(text="❌ Отклоненные", callback_data="records_rejected")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_records")]
+    ])
+    return keyboard
+
+def get_cancel_keyboard():
+    """Простая клавиатура отмены"""
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="🔙 Отмена")]],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+    return keyboard
+
+def get_confirmation_keyboard():
+    """Клавиатура подтверждения отправки"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Да, отправить", callback_data="confirm_submit"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_submit")
+        ]
+    ])
+    return keyboard
+
+def remove_keyboard():
+    """Убрать клавиатуру"""
+    from aiogram.types import ReplyKeyboardRemove
+    return ReplyKeyboardRemove()
