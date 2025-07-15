@@ -6,7 +6,7 @@ b1 = InlineKeyboardButton(
 )
 b2 = InlineKeyboardButton(
     text="Посмотреть расписание товарищеских встреч",
-    callback_data="events"
+    url="https://sputnik.lab244.ru"
 )
 b3 = InlineKeyboardButton(
     text="Посмотреть/запатентовать инновационные решения",
