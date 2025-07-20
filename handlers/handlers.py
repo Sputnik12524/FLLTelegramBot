@@ -8,9 +8,12 @@ from database.models import User, UserTeams
 from calculator import fll_calculator
 from sqlalchemy import select
 
+from keybords.patent_kb import get_confirm_join_team_keyboard
+
 
 class Register(StatesGroup):
     waiting_info = State()
+    confirm_existing_team = State()
 
 
 router = Router()
@@ -137,7 +140,7 @@ async def back_to_calculator(callback: CallbackQuery):
         await callback.answer(f"Ошибка: {str(e)}")
 
 
-@router.callback_query(F.data == "register")
+"""@router.callback_query(F.data == "register")
 async def register(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await callback.message.answer("Зарегистрируйтесь в системе, чтобы сохранять результаты!")
@@ -215,4 +218,140 @@ async def register2(message: Message, state: FSMContext, session: AsyncSession):
         await message.answer(f"Произошла ошибка при регистрации: {e}.\nПожалуйста, попробуйте еще раз.")
         print(f"ERROR in register2 for user {user_tg_id}: {e}")
         await state.clear()  # Возможно, стоит очистить состояние или вернуть пользователя назад
+"""
 
+@router.callback_query(F.data == "register")
+async def register(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
+    await callback.answer()
+
+    user_tg_id = callback.from_user.id
+    user = await session.scalar(select(User).where(User.tg_id == user_tg_id))
+
+    if user and user.team_id:
+        existing_team = await session.scalar(select(UserTeams).where(UserTeams.id == user.team_id))
+        await callback.message.answer(
+            f"Вы уже зарегистрированы в команде №{existing_team.number}. Если вы хотите сменить команду, свяжитесь с администратором.")
+        await state.clear()
+        return
+
+    await state.set_state(Register.waiting_info)
+    await callback.message.answer(
+        "Пожалуйста, введите номер команды, название и город через запятую (например: 12524, Sputnik Original, Санкт-Петербург)")
+
+
+@router.message(Register.waiting_info)
+async def register2(message: Message, state: FSMContext, session: AsyncSession):
+    input_text = message.text.strip()
+    parts = input_text.split(',', 2)
+
+    if len(parts) != 3:
+        await message.answer(
+            "Пожалуйста, введите номер команды, название и город через запятую (например: 12524, Sputnik Original, Санкт-Петербург)")
+        return
+
+    try:
+        team_number = int(parts[0].strip())
+        if team_number <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("Неверный номер команды. Введите целое положительное число.")
+        return
+
+    team_name = parts[1].strip()
+    if not team_name:
+        await message.answer("Название команды не может быть пустым.")
+        return
+    if len(team_name) > 50:
+        await message.answer("Название команды слишком длинное (макс. 50 символов).")
+        return
+
+    existing_team = await session.scalar(select(UserTeams).where(UserTeams.number == team_number))
+
+    if existing_team:
+        await state.update_data(proposed_team_number=team_number)
+        await state.set_state(Register.confirm_existing_team)
+
+        confirmation_text = (
+            f"Команда №{team_number} ('{existing_team.team}') уже существует в базе данных.\n"
+            f"Вы уверены, что хотите зарегистрироваться именно в эту команду?"
+        )
+        # !!! ВЫЗЫВАЕМ БЕЗ ПАРАМЕТРОВ АДМИНОВ !!!
+        await message.answer(confirmation_text, reply_markup=get_confirm_join_team_keyboard())
+        return
+
+    await state.clear()
+    await _register_new_team_and_user(message, session, team_number, team_name, team_city=parts[2].strip())
+
+
+# --- ХЭНДЛЕРЫ ДЛЯ ПОДТВЕРЖДЕНИЯ СУЩЕСТВУЮЩЕЙ КОМАНДЫ (confirm_join_existing_team без изменений) ---
+@router.callback_query(F.data == "confirm_join_existing_team", Register.confirm_existing_team)
+async def confirm_join_existing_team(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
+    await callback.answer("Подтверждено!")
+
+    data = await state.get_data()
+    team_number = data.get('proposed_team_number')
+
+    if team_number is None:
+        await callback.message.answer("Произошла ошибка, пожалуйста, попробуйте зарегистрироваться снова.")
+        await state.clear()
+        return
+
+    existing_team = await session.scalar(select(UserTeams).where(UserTeams.number == team_number))
+
+    if existing_team:
+        user_tg_id = callback.from_user.id
+        user = await session.scalar(select(User).where(User.tg_id == user_tg_id))
+
+        if user:
+            user.team_id = existing_team.id
+            await session.commit()
+            await callback.message.answer(
+                f"Вы успешно зарегистрированы в команду №{team_number} ('{existing_team.team}')!")
+        else:
+            await callback.message.answer("Ваш пользователь не найден. Пожалуйста, свяжитесь с администратором.")
+            await session.rollback()
+    else:
+        await callback.message.answer(
+            "Команда не найдена. Пожалуйста, попробуйте снова или свяжитесь с администратором.")
+        await session.rollback()
+
+    await state.clear()
+
+
+@router.callback_query(F.data == "cancel_join_existing_team", Register.confirm_existing_team)
+async def cancel_join_existing_team(callback: CallbackQuery, state: FSMContext):
+    await callback.answer("Регистрация отменена.")
+    await state.clear() # Очищаем состояние
+
+    admin_info_text = "Регистрация в команду отменена.\n" \
+                      "Если вы считаете, что это ошибка, или хотите зарегистрировать новую команду с этим номером, " \
+                      "пожалуйста, свяжитесь с администраторами:\n"
+
+    if ADMIN_TELEGRAM_USERNAMES:
+        admin_info_text += "\n".join(ADMIN_TELEGRAM_USERNAMES)
+
+
+async def _register_new_team_and_user(message: Message, session: AsyncSession, team_number: int, team_name: str, team_city: str):
+    new_team = UserTeams(number=team_number, team=team_name, city=team_city)
+    session.add(new_team)
+    await session.flush() # Получаем ID новой команды до коммита
+
+    user = await session.scalar(select(User).where(User.tg_id == message.from_user.id))
+    if user:
+        user.team_id = new_team.id
+        await session.commit()
+        await message.answer(f"Вы успешно зарегистрировали команду №{team_number} ('{team_name}') и были к ней прикреплены!")
+    else:
+        await session.rollback() # Откатываем создание команды, если нет пользователя
+        await message.answer("Ошибка: Пользователь не найден. Пожалуйста, свяжитесь с администратором.")
+
+# !!! УДАЛЯЕМ ЭТОТ ХЭНДЛЕР !!!
+# @router.callback_query(F.data.startswith("contact_admin_"), Register.confirm_existing_team)
+# async def contact_admin_callback(callback: types.CallbackQuery):
+#     await callback.answer()
+#     admin_id = callback.data.split("_")[-1]
+#     await callback.message.answer(
+#         f"Чтобы связаться с администратором, напишите ему в Telegram, используя его ID: `{admin_id}`\n"
+#         f"Или, если у вас есть его имя пользователя, то `@имя_пользователя`.",
+#         parse_mode="Markdown"
+#     )
