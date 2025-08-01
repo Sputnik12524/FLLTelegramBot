@@ -2,7 +2,7 @@ from typing import List
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from database.models import Patent, User, UserTeams  # Убедитесь, что User импортирован!
+from database.models import Patent, User, UserTeams, FLLResult  # Убедитесь, что User импортирован!
 
 
 # from db.engine import async_session_factory # Эта строка нужна, только если функция НЕ получает session как аргумент
@@ -55,3 +55,90 @@ async def add_patent_to_db(
         approved=False  # Явно задаем False, хотя в модели уже есть default
     )
     session.add(new_patent)
+
+
+# Функции для работы с результатами FLL калькулятора
+async def save_fll_result(
+        user_tg_id: int,
+        mission_scores: dict,
+        total_score: int,
+        max_possible_score: int,
+        name: str = None,
+        session: AsyncSession = None
+) -> FLLResult:
+    """Сохраняет результат FLL калькулятора в базу данных"""
+    
+    # Находим пользователя и его команду
+    user_query = await session.execute(
+        select(User).where(User.tg_id == user_tg_id)
+    )
+    user_obj = user_query.scalar_one_or_none()
+    
+    if user_obj is None:
+        raise ValueError(f"Пользователь с TG ID {user_tg_id} не найден в базе данных.")
+    
+    # Создаем новый результат
+    new_result = FLLResult(
+        user_tg_id=user_tg_id,
+        team_id=user_obj.team_id,
+        mission_scores=mission_scores,
+        total_score=total_score,
+        max_possible_score=max_possible_score,
+        name=name
+    )
+    
+    session.add(new_result)
+    await session.commit()
+    await session.refresh(new_result)
+    
+    return new_result
+
+
+async def get_user_fll_results(
+        user_tg_id: int,
+        session: AsyncSession = None
+) -> List[FLLResult]:
+    """Получает все результаты пользователя"""
+    
+    results_query = await session.execute(
+        select(FLLResult)
+        .where(FLLResult.user_tg_id == user_tg_id)
+        .order_by(FLLResult.created_at.desc())
+    )
+    
+    return results_query.scalars().all()
+
+
+async def get_fll_result_by_id(
+        result_id: int,
+        session: AsyncSession = None
+) -> FLLResult:
+    """Получает конкретный результат по ID"""
+    
+    result_query = await session.execute(
+        select(FLLResult).where(FLLResult.id == result_id)
+    )
+    
+    return result_query.scalar_one_or_none()
+
+
+async def delete_fll_result(
+        result_id: int,
+        user_tg_id: int,
+        session: AsyncSession = None
+) -> bool:
+    """Удаляет результат (только если он принадлежит пользователю)"""
+    
+    result_query = await session.execute(
+        select(FLLResult)
+        .where(FLLResult.id == result_id, FLLResult.user_tg_id == user_tg_id)
+    )
+    
+    result = result_query.scalar_one_or_none()
+    
+    if result:
+        await session.delete(result)
+        await session.commit()
+        return True
+    
+    return False

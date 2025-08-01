@@ -69,3 +69,23 @@ class Record(Base):
     r_team: Mapped[int] = mapped_column(ForeignKey('teams.id'))
     result: Mapped[int] = mapped_column(Integer)
     video_id: Mapped[int] = mapped_column(BigInteger)
+
+
+class FLLResult(Base, AsyncAttrs):
+    __tablename__ = 'fll_results'
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    team_id: Mapped[Optional[int]] = mapped_column(ForeignKey('teams.id'), nullable=True)
+    
+    # Сохраняем результаты миссий как JSON
+    mission_scores: Mapped[dict] = mapped_column(JSON)
+    total_score: Mapped[int] = mapped_column(Integer)
+    max_possible_score: Mapped[int] = mapped_column(Integer)
+    
+    # Метаданные
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)  # Название результата
+    
+    def __repr__(self):
+        return f"<FLLResult(id={self.id}, user_tg_id={self.user_tg_id}, total_score={self.total_score})>"

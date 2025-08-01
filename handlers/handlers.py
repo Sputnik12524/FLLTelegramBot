@@ -7,13 +7,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database.models import User, UserTeams
 from calculator import fll_calculator
 from sqlalchemy import select
+from datetime import datetime
+from database.models import FLLResult, User
 
-from keybords.patent_kb import get_confirm_join_team_keyboard
 
 
 class Register(StatesGroup):
     waiting_info = State()
-    confirm_existing_team = State()
 
 
 router = Router()
@@ -140,7 +140,7 @@ async def back_to_calculator(callback: CallbackQuery):
         await callback.answer(f"Ошибка: {str(e)}")
 
 
-"""@router.callback_query(F.data == "register")
+@router.callback_query(F.data == "register")
 async def register(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await callback.message.answer("Зарегистрируйтесь в системе, чтобы сохранять результаты!")
@@ -218,140 +218,200 @@ async def register2(message: Message, state: FSMContext, session: AsyncSession):
         await message.answer(f"Произошла ошибка при регистрации: {e}.\nПожалуйста, попробуйте еще раз.")
         print(f"ERROR in register2 for user {user_tg_id}: {e}")
         await state.clear()  # Возможно, стоит очистить состояние или вернуть пользователя назад
-"""
-
-@router.callback_query(F.data == "register")
-async def register(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
-    await callback.answer()
-
-    user_tg_id = callback.from_user.id
-    user = await session.scalar(select(User).where(User.tg_id == user_tg_id))
-
-    if user and user.team_id:
-        existing_team = await session.scalar(select(UserTeams).where(UserTeams.id == user.team_id))
-        await callback.message.answer(
-            f"Вы уже зарегистрированы в команде №{existing_team.number}. Если вы хотите сменить команду, свяжитесь с администратором.")
-        await state.clear()
-        return
-
-    await state.set_state(Register.waiting_info)
-    await callback.message.answer(
-        "Пожалуйста, введите номер команды, название и город через запятую (например: 12524, Sputnik Original, Санкт-Петербург)")
 
 
-@router.message(Register.waiting_info)
-async def register2(message: Message, state: FSMContext, session: AsyncSession):
-    input_text = message.text.strip()
-    parts = input_text.split(',', 2)
-
-    if len(parts) != 3:
-        await message.answer(
-            "Пожалуйста, введите номер команды, название и город через запятую (например: 12524, Sputnik Original, Санкт-Петербург)")
-        return
-
+@router.callback_query(F.data == "calc_save")
+async def show_save_options(callback: CallbackQuery):
+    """Показывает опции сохранения результатов"""
     try:
-        team_number = int(parts[0].strip())
-        if team_number <= 0:
-            raise ValueError
-    except ValueError:
-        await message.answer("Неверный номер команды. Введите целое положительное число.")
-        return
-
-    team_name = parts[1].strip()
-    if not team_name:
-        await message.answer("Название команды не может быть пустым.")
-        return
-    if len(team_name) > 50:
-        await message.answer("Название команды слишком длинное (макс. 50 символов).")
-        return
-
-    existing_team = await session.scalar(select(UserTeams).where(UserTeams.number == team_number))
-
-    if existing_team:
-        await state.update_data(proposed_team_number=team_number)
-        await state.set_state(Register.confirm_existing_team)
-
-        confirmation_text = (
-            f"Команда №{team_number} ('{existing_team.team}') уже существует в базе данных.\n"
-            f"Вы уверены, что хотите зарегистрироваться именно в эту команду?"
+        user_id = callback.from_user.id
+        total_score = fll_calculator.get_total_score(user_id)
+        
+        if total_score == 0:
+            await callback.answer("❌ Нет результатов для сохранения! Сначала наберите очки.")
+            return
+        
+        keyboard = fll_calculator.get_save_keyboard()
+        await callback.message.edit_text(
+            f"💾 **Сохранение результатов**\n\n"
+            f"🎯 Общий счет: {total_score}\n"
+            f"📊 Максимально возможный: {fll_calculator.get_max_possible_score()}\n\n"
+            f"Хотите сохранить эти результаты?",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
         )
-        # !!! ВЫЗЫВАЕМ БЕЗ ПАРАМЕТРОВ АДМИНОВ !!!
-        await message.answer(confirmation_text, reply_markup=get_confirm_join_team_keyboard())
-        return
-
-    await state.clear()
-    await _register_new_team_and_user(message, session, team_number, team_name, team_city=parts[2].strip())
+        await callback.answer()
+    except Exception as e:
+        await callback.answer(f"Ошибка: {str(e)}")
 
 
-# --- ХЭНДЛЕРЫ ДЛЯ ПОДТВЕРЖДЕНИЯ СУЩЕСТВУЮЩЕЙ КОМАНДЫ (confirm_join_existing_team без изменений) ---
-@router.callback_query(F.data == "confirm_join_existing_team", Register.confirm_existing_team)
-async def confirm_join_existing_team(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
-    await callback.answer("Подтверждено!")
-
-    data = await state.get_data()
-    team_number = data.get('proposed_team_number')
-
-    if team_number is None:
-        await callback.message.answer("Произошла ошибка, пожалуйста, попробуйте зарегистрироваться снова.")
-        await state.clear()
-        return
-
-    existing_team = await session.scalar(select(UserTeams).where(UserTeams.number == team_number))
-
-    if existing_team:
-        user_tg_id = callback.from_user.id
-        user = await session.scalar(select(User).where(User.tg_id == user_tg_id))
-
-        if user:
-            user.team_id = existing_team.id
-            await session.commit()
-            await callback.message.answer(
-                f"Вы успешно зарегистрированы в команду №{team_number} ('{existing_team.team}')!")
-        else:
-            await callback.message.answer("Ваш пользователь не найден. Пожалуйста, свяжитесь с администратором.")
-            await session.rollback()
-    else:
-        await callback.message.answer(
-            "Команда не найдена. Пожалуйста, попробуйте снова или свяжитесь с администратором.")
-        await session.rollback()
-
-    await state.clear()
-
-
-@router.callback_query(F.data == "cancel_join_existing_team", Register.confirm_existing_team)
-async def cancel_join_existing_team(callback: CallbackQuery, state: FSMContext):
-    await callback.answer("Регистрация отменена.")
-    await state.clear() # Очищаем состояние
-
-    admin_info_text = "Регистрация в команду отменена.\n" \
-                      "Если вы считаете, что это ошибка, или хотите зарегистрировать новую команду с этим номером, " \
-                      "пожалуйста, свяжитесь с администраторами:\n"
-
-    if ADMIN_TELEGRAM_USERNAMES:
-        admin_info_text += "\n".join(ADMIN_TELEGRAM_USERNAMES)
-
-
-async def _register_new_team_and_user(message: Message, session: AsyncSession, team_number: int, team_name: str, team_city: str):
-    new_team = UserTeams(number=team_number, team=team_name, city=team_city)
-    session.add(new_team)
-    await session.flush() # Получаем ID новой команды до коммита
-
-    user = await session.scalar(select(User).where(User.tg_id == message.from_user.id))
-    if user:
-        user.team_id = new_team.id
+@router.callback_query(F.data == "calc_save_simple")
+async def save_results(callback: CallbackQuery, session: AsyncSession):
+    """Сохраняет результаты в базу данных"""
+    try:
+        user_id = callback.from_user.id
+        total_score = fll_calculator.get_total_score(user_id)
+        
+        if total_score == 0:
+            await callback.answer("❌ Нет результатов для сохранения!")
+            return
+        
+        # Получаем данные пользователя
+        user_obj = await session.scalar(
+            select(User).where(User.tg_id == user_id)
+        )
+        
+        if not user_obj:
+            await callback.answer("❌ Сначала зарегистрируйтесь в системе!")
+            return
+        
+        # Создаем новый результат с текущей датой и временем
+        current_datetime = datetime.now()
+        formatted_datetime = current_datetime.strftime('%d.%m.%Y в %H:%M')
+        
+        new_result = FLLResult(
+            user_tg_id=user_id,
+            team_id=user_obj.team_id,
+            mission_scores=fll_calculator.get_user_scores_dict(user_id),
+            total_score=total_score,
+            max_possible_score=fll_calculator.get_max_possible_score(),
+            name=f"Результат от {formatted_datetime}"
+        )
+        
+        session.add(new_result)
         await session.commit()
-        await message.answer(f"Вы успешно зарегистрировали команду №{team_number} ('{team_name}') и были к ней прикреплены!")
-    else:
-        await session.rollback() # Откатываем создание команды, если нет пользователя
-        await message.answer("Ошибка: Пользователь не найден. Пожалуйста, свяжитесь с администратором.")
+        
+        # Возвращаемся к калькулятору
+        keyboard = fll_calculator.get_main_keyboard(user_id)
+        await callback.message.edit_text(
+            "🧮 **Калькулятор миссий FLL - Богатый урожай**\n\n"
+            f"✅ Результаты успешно сохранены!\n"
+            f"📅 Дата: {formatted_datetime}\n"
+            "Выберите миссию для установки очков:",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+        await callback.answer("✅ Результаты сохранены!")
+        
+    except Exception as e:
+        await callback.answer(f"Ошибка при сохранении: {str(e)}")
 
-# !!! УДАЛЯЕМ ЭТОТ ХЭНДЛЕР !!!
-# @router.callback_query(F.data.startswith("contact_admin_"), Register.confirm_existing_team)
-# async def contact_admin_callback(callback: types.CallbackQuery):
-#     await callback.answer()
-#     admin_id = callback.data.split("_")[-1]
-#     await callback.message.answer(
-#         f"Чтобы связаться с администратором, напишите ему в Telegram, используя его ID: `{admin_id}`\n"
-#         f"Или, если у вас есть его имя пользователя, то `@имя_пользователя`.",
-#         parse_mode="Markdown"
-#     )
+
+
+
+
+@router.callback_query(F.data == "calc_my_results")
+async def show_my_results(callback: CallbackQuery, session: AsyncSession):
+    """Показывает сохраненные результаты пользователя"""
+    try:
+        user_id = callback.from_user.id
+        
+        # Получаем результаты пользователя
+        results = await session.scalars(
+            select(FLLResult)
+            .where(FLLResult.user_tg_id == user_id)
+            .order_by(FLLResult.created_at.desc())
+        )
+        results = results.all()
+        
+        if not results:
+            keyboard = fll_calculator.get_main_keyboard(user_id)
+            await callback.message.edit_text(
+                "🧮 **Калькулятор миссий FLL - Богатый урожай**\n\n"
+                "📋 У вас пока нет сохраненных результатов.\n"
+                "Выберите миссию для установки очков:",
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+            await callback.answer("📋 Нет сохраненных результатов")
+            return
+        
+        keyboard = fll_calculator.get_results_keyboard(results)
+        await callback.message.edit_text(
+            "📋 **Мои сохраненные результаты**\n\n"
+            f"Найдено результатов: {len(results)}\n"
+            "Выберите результат для просмотра:",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+        await callback.answer()
+        
+    except Exception as e:
+        await callback.answer(f"Ошибка: {str(e)}")
+
+
+@router.callback_query(F.data.startswith("calc_view_result_"))
+async def view_result_detail(callback: CallbackQuery, session: AsyncSession):
+    """Показывает детали конкретного результата"""
+    try:
+        result_id = int(callback.data.replace("calc_view_result_", ""))
+        
+        # Получаем результат
+        result = await session.scalar(
+            select(FLLResult).where(FLLResult.id == result_id)
+        )
+        
+        if not result:
+            await callback.answer("❌ Результат не найден!")
+            return
+        
+        # Формируем детальную информацию с улучшенным отображением даты
+        detail_text = f"📊 **Детали результата**\n\n"
+        detail_text += f"📅 Дата и время: {result.created_at.strftime('%d.%m.%Y в %H:%M')}\n"
+        detail_text += f"🎯 Общий счет: {result.total_score}/{result.max_possible_score}\n"
+        detail_text += f"📈 Процент выполнения: {(result.total_score / result.max_possible_score * 100):.1f}%\n\n"
+        
+        detail_text += "🏆 **Разбивка по миссиям:**\n"
+        for mission_id, score in result.mission_scores.items():
+            mission_name = fll_calculator.missions.get(mission_id, {}).get('name', mission_id)
+            max_points = fll_calculator.missions.get(mission_id, {}).get('max_points', 0)
+            detail_text += f"• {mission_name}: {score}/{max_points}\n"
+        
+        keyboard = fll_calculator.get_result_detail_keyboard(result_id)
+        await callback.message.edit_text(
+            detail_text,
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+        await callback.answer()
+        
+    except Exception as e:
+        await callback.answer(f"Ошибка: {str(e)}")
+
+
+@router.callback_query(F.data.startswith("calc_delete_result_"))
+async def delete_result(callback: CallbackQuery, session: AsyncSession):
+    """Удаляет сохраненный результат"""
+    try:
+        result_id = int(callback.data.replace("calc_delete_result_", ""))
+        user_id = callback.from_user.id
+        
+        # Получаем результат и проверяем, что он принадлежит пользователю
+        result = await session.scalar(
+            select(FLLResult).where(
+                FLLResult.id == result_id,
+                FLLResult.user_tg_id == user_id
+            )
+        )
+        
+        if not result:
+            await callback.answer("❌ Результат не найден или у вас нет прав на его удаление!")
+            return
+        
+        # Удаляем результат
+        await session.delete(result)
+        await session.commit()
+        
+        await callback.answer("🗑️ Результат удален!")
+        
+        # Возвращаемся к списку результатов
+        await show_my_results(callback, session)
+        
+    except Exception as e:
+        await callback.answer(f"Ошибка при удалении: {str(e)}")
+
+
+
+
+
+

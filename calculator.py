@@ -39,6 +39,12 @@ class FLLCalculator:
         ]
         buttons.append(control_buttons)
         
+        # Новые кнопки для сохранения и просмотра результатов
+        save_results_button = [InlineKeyboardButton(text="💾 Сохранить результаты", callback_data="calc_save")]
+        my_results_button = [InlineKeyboardButton(text="📋 Мои результаты", callback_data="calc_my_results")]
+        buttons.append(save_results_button)
+        buttons.append(my_results_button)
+        
         # Изменяем callback_data для кнопки "Назад"
         back_button = [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu_pt")]
         buttons.append(back_button)
@@ -85,6 +91,48 @@ class FLLCalculator:
         back_button = InlineKeyboardButton(text="◀️ Назад к миссиям", callback_data="calc_back")
         buttons.append([back_button])
         
+        return InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    def get_save_keyboard(self):
+        """Клавиатура для сохранения результатов"""
+        buttons = [
+            [InlineKeyboardButton(text="💾 Сохранить результат", callback_data="calc_save_simple")],
+            [InlineKeyboardButton(text="◀️ Назад к калькулятору", callback_data="calc_back")]
+        ]
+        return InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+
+    
+    def get_results_keyboard(self, results):
+        """Клавиатура для просмотра результатов"""
+        buttons = []
+        
+        for result in results:
+            # Используем сохраненное имя или создаем из даты
+            if result.name:
+                name = result.name
+            else:
+                name = f"Результат от {result.created_at.strftime('%d.%m.%Y в %H:%M')}"
+            
+            button_text = f"{name} ({result.total_score}/{result.max_possible_score})"
+            button = InlineKeyboardButton(
+                text=button_text,
+                callback_data=f"calc_view_result_{result.id}"
+            )
+            buttons.append([button])
+        
+        # Кнопка назад
+        back_button = [InlineKeyboardButton(text="◀️ Назад к калькулятору", callback_data="calc_back")]
+        buttons.append(back_button)
+        
+        return InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    def get_result_detail_keyboard(self, result_id):
+        """Клавиатура для детального просмотра результата"""
+        buttons = [
+            [InlineKeyboardButton(text="🗑️ Удалить результат", callback_data=f"calc_delete_result_{result_id}")],
+            [InlineKeyboardButton(text="◀️ Назад к результатам", callback_data="calc_my_results")]
+        ]
         return InlineKeyboardMarkup(inline_keyboard=buttons)
     
     def set_mission_score(self, user_id, mission_id, score):
@@ -149,6 +197,16 @@ class FLLCalculator:
         breakdown += f"\n📈 **Процент выполнения: {percentage:.1f}%**"
         
         return breakdown
+    
+    def get_user_scores_dict(self, user_id):
+        """Возвращает словарь с очками пользователя для сохранения"""
+        if not user_id or user_id not in self.user_scores:
+            return {}
+        return self.user_scores[user_id].copy()
+    
+    def get_max_possible_score(self):
+        """Возвращает максимально возможный счет"""
+        return sum(mission["max_points"] for mission in self.missions.values())
 
 # Создаем глобальный экземпляр калькулятора
 fll_calculator = FLLCalculator()
