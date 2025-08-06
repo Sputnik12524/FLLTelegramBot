@@ -5,8 +5,8 @@ b1 = InlineKeyboardButton(
     callback_data="register"
 )
 b2 = InlineKeyboardButton(
-    text="Посмотреть расписание товарищеских встреч",
-    url="https://sputnik.lab244.ru"
+    text="Калькулятор миссий",
+    callback_data="missions"
 )
 b3 = InlineKeyboardButton(
     text="Посмотреть/запатентовать инновационные решения",
@@ -21,8 +21,8 @@ b5 = InlineKeyboardButton(
     callback_data="records"
 )
 b6 = InlineKeyboardButton(
-    text="Калькулятор миссий",
-    callback_data="missions"
+    text="Посмотреть расписание товарищеских встреч",
+    url="https://sputnik.lab244.ru"
 )
 
 first_row = [b1]
