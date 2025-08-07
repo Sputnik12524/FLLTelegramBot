@@ -1,5 +1,5 @@
 from aiogram import Router, F
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +9,8 @@ from calculator import fll_calculator
 from sqlalchemy import select
 from datetime import datetime
 from database.models import FLLResult, User
+from aiogram import types
+from local_storage import local_storage
 
 
 
@@ -246,8 +248,8 @@ async def show_save_options(callback: CallbackQuery):
 
 
 @router.callback_query(F.data == "calc_save_simple")
-async def save_results(callback: CallbackQuery, session: AsyncSession):
-    """Сохраняет результаты в базу данных"""
+async def save_results(callback: CallbackQuery):
+    """Сохраняет результаты локально"""
     try:
         user_id = callback.from_user.id
         total_score = fll_calculator.get_total_score(user_id)
@@ -256,30 +258,18 @@ async def save_results(callback: CallbackQuery, session: AsyncSession):
             await callback.answer("❌ Нет результатов для сохранения!")
             return
         
-        # Получаем данные пользователя
-        user_obj = await session.scalar(
-            select(User).where(User.tg_id == user_id)
-        )
-        
-        if not user_obj:
-            await callback.answer("❌ Сначала зарегистрируйтесь в системе!")
-            return
-        
         # Создаем новый результат с текущей датой и временем
         current_datetime = datetime.now()
         formatted_datetime = current_datetime.strftime('%d.%m.%Y в %H:%M')
         
-        new_result = FLLResult(
-            user_tg_id=user_id,
-            team_id=user_obj.team_id,
+        # Сохраняем результат локально
+        new_result = local_storage.save_result(
+            user_id=user_id,
             mission_scores=fll_calculator.get_user_scores_dict(user_id),
             total_score=total_score,
             max_possible_score=fll_calculator.get_max_possible_score(),
             name=f"Результат от {formatted_datetime}"
         )
-        
-        session.add(new_result)
-        await session.commit()
         
         # Возвращаемся к калькулятору
         keyboard = fll_calculator.get_main_keyboard(user_id)
@@ -301,18 +291,16 @@ async def save_results(callback: CallbackQuery, session: AsyncSession):
 
 
 @router.callback_query(F.data == "calc_my_results")
-async def show_my_results(callback: CallbackQuery, session: AsyncSession):
+async def show_my_results(callback: CallbackQuery):
     """Показывает сохраненные результаты пользователя"""
     try:
         user_id = callback.from_user.id
         
-        # Получаем результаты пользователя
-        results = await session.scalars(
-            select(FLLResult)
-            .where(FLLResult.user_tg_id == user_id)
-            .order_by(FLLResult.created_at.desc())
-        )
-        results = results.all()
+        # Получаем результаты пользователя из локального хранилища
+        results = local_storage.get_user_results(user_id)
+        
+        # Сортируем по дате создания (новые сначала)
+        results.sort(key=lambda x: x.created_at, reverse=True)
         
         if not results:
             keyboard = fll_calculator.get_main_keyboard(user_id)
@@ -341,23 +329,23 @@ async def show_my_results(callback: CallbackQuery, session: AsyncSession):
 
 
 @router.callback_query(F.data.startswith("calc_view_result_"))
-async def view_result_detail(callback: CallbackQuery, session: AsyncSession):
+async def view_result_detail(callback: CallbackQuery):
     """Показывает детали конкретного результата"""
     try:
         result_id = int(callback.data.replace("calc_view_result_", ""))
+        user_id = callback.from_user.id
         
-        # Получаем результат
-        result = await session.scalar(
-            select(FLLResult).where(FLLResult.id == result_id)
-        )
+        # Получаем результат из локального хранилища
+        result = local_storage.get_result_by_id(user_id, result_id)
         
         if not result:
             await callback.answer("❌ Результат не найден!")
             return
         
         # Формируем детальную информацию с улучшенным отображением даты
+        created_at = datetime.fromisoformat(result.created_at)
         detail_text = f"📊 **Детали результата**\n\n"
-        detail_text += f"📅 Дата и время: {result.created_at.strftime('%d.%m.%Y в %H:%M')}\n"
+        detail_text += f"📅 Дата и время: {created_at.strftime('%d.%m.%Y в %H:%M')}\n"
         detail_text += f"🎯 Общий счет: {result.total_score}/{result.max_possible_score}\n"
         detail_text += f"📈 Процент выполнения: {(result.total_score / result.max_possible_score * 100):.1f}%\n\n"
         
@@ -380,35 +368,219 @@ async def view_result_detail(callback: CallbackQuery, session: AsyncSession):
 
 
 @router.callback_query(F.data.startswith("calc_delete_result_"))
-async def delete_result(callback: CallbackQuery, session: AsyncSession):
+async def delete_result(callback: CallbackQuery):
     """Удаляет сохраненный результат"""
     try:
         result_id = int(callback.data.replace("calc_delete_result_", ""))
         user_id = callback.from_user.id
         
-        # Получаем результат и проверяем, что он принадлежит пользователю
-        result = await session.scalar(
-            select(FLLResult).where(
-                FLLResult.id == result_id,
-                FLLResult.user_tg_id == user_id
-            )
-        )
+        # Удаляем результат из локального хранилища
+        success = local_storage.delete_result(user_id, result_id)
         
-        if not result:
-            await callback.answer("❌ Результат не найден или у вас нет прав на его удаление!")
+        if not success:
+            await callback.answer("❌ Результат не найден!")
             return
-        
-        # Удаляем результат
-        await session.delete(result)
-        await session.commit()
         
         await callback.answer("🗑️ Результат удален!")
         
         # Возвращаемся к списку результатов
-        await show_my_results(callback, session)
+        await show_my_results(callback)
         
     except Exception as e:
         await callback.answer(f"Ошибка при удалении: {str(e)}")
+
+
+@router.callback_query(F.data == "calc_view_report")
+async def show_report_choice(callback: CallbackQuery):
+    """Показывает выбор типа отчёта"""
+    try:
+        keyboard = fll_calculator.get_report_choice_keyboard()
+        await callback.message.edit_text(
+            "📊 **Выберите тип отчёта**\n\n"
+            "📋 **Краткий отчёт** - статистика в текстовом виде\n"
+            "📊 **Детальный отчёт** - полная информация в Excel файле",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+        await callback.answer()
+    except Exception as e:
+        await callback.answer(f"Ошибка: {str(e)}")
+
+
+@router.callback_query(F.data == "calc_brief_report")
+async def show_brief_report_period(callback: CallbackQuery):
+    """Показывает выбор периода для краткого отчёта"""
+    try:
+        keyboard = fll_calculator.get_report_period_keyboard("brief_report")
+        await callback.message.edit_text(
+            "📋 **Выберите период для краткого отчёта**\n\n"
+            "Выберите временной период для анализа ваших результатов:",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+        await callback.answer()
+    except Exception as e:
+        await callback.answer(f"Ошибка: {str(e)}")
+
+
+@router.callback_query(F.data == "calc_detailed_report")
+async def show_detailed_report_period(callback: CallbackQuery):
+    """Показывает выбор периода для детального отчёта"""
+    try:
+        keyboard = fll_calculator.get_report_period_keyboard("detailed_report")
+        await callback.message.edit_text(
+            "📊 **Выберите период для детального отчёта**\n\n"
+            "Выберите временной период для создания Excel отчёта:",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+        await callback.answer()
+    except Exception as e:
+        await callback.answer(f"Ошибка: {str(e)}")
+
+
+@router.callback_query(F.data.startswith("calc_brief_report_"))
+async def generate_brief_report_with_period(callback: CallbackQuery):
+    """Генерирует краткий отчёт с фильтрацией по периоду"""
+    try:
+        user_id = callback.from_user.id
+        period = callback.data.replace("calc_brief_report_", "")
+        
+        # Определяем дату начала периода
+        from datetime import timedelta
+        now = datetime.now()
+        
+        if period == "week":
+            start_date = now - timedelta(days=7)
+            period_name = "неделю"
+        elif period == "month":
+            start_date = now - timedelta(days=30)
+            period_name = "месяц"
+        elif period == "half_year":
+            start_date = now - timedelta(days=180)
+            period_name = "полгода"
+        elif period == "year":
+            start_date = now - timedelta(days=365)
+            period_name = "год"
+        elif period == "all":
+            start_date = None
+            period_name = "всё время"
+        else:
+            await callback.answer("❌ Неверный период!")
+            return
+        
+        # Получаем результаты пользователя с фильтрацией по дате
+        results = local_storage.get_results_by_period(user_id, start_date)
+        
+        # Сортируем по дате создания (новые сначала)
+        results.sort(key=lambda x: x.created_at, reverse=True)
+        
+        if not results:
+            back_button = [InlineKeyboardButton(text="◀️ Назад к выбору периода", callback_data="calc_brief_report")]
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[back_button])
+            await callback.message.edit_text(
+                f"📋 **Краткий отчёт за {period_name}**\n\n"
+                f"За выбранный период нет сохранённых результатов.",
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+            await callback.answer()
+            return
+        
+        # Генерируем краткий отчёт
+        report_text = fll_calculator.generate_brief_report(results)
+        report_text = f"📋 **Краткий отчёт за {period_name}**\n\n" + report_text
+        
+        # Создаём клавиатуру для возврата
+        back_button = [InlineKeyboardButton(text="◀️ Назад к результатам", callback_data="calc_my_results")]
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[back_button])
+        
+        await callback.message.edit_text(
+            report_text,
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+        await callback.answer()
+        
+    except Exception as e:
+        await callback.answer(f"Ошибка при генерации отчёта: {str(e)}")
+
+
+@router.callback_query(F.data.startswith("calc_detailed_report_"))
+async def generate_detailed_report_with_period(callback: CallbackQuery):
+    """Генерирует детальный Excel отчёт с фильтрацией по периоду"""
+    try:
+        user_id = callback.from_user.id
+        period = callback.data.replace("calc_detailed_report_", "")
+        
+        # Определяем дату начала периода
+        from datetime import timedelta
+        now = datetime.now()
+        
+        if period == "week":
+            start_date = now - timedelta(days=7)
+            period_name = "неделю"
+        elif period == "month":
+            start_date = now - timedelta(days=30)
+            period_name = "месяц"
+        elif period == "half_year":
+            start_date = now - timedelta(days=180)
+            period_name = "полгода"
+        elif period == "year":
+            start_date = now - timedelta(days=365)
+            period_name = "год"
+        elif period == "all":
+            start_date = None
+            period_name = "всё время"
+        else:
+            await callback.answer("❌ Неверный период!")
+            return
+        
+        # Получаем результаты пользователя с фильтрацией по дате
+        results = local_storage.get_results_by_period(user_id, start_date)
+        
+        # Сортируем по дате создания (новые сначала)
+        results.sort(key=lambda x: x.created_at, reverse=True)
+        
+        if not results:
+            await callback.answer(f"❌ Нет результатов за {period_name} для создания отчёта!")
+            return
+        
+        # Генерируем Excel отчёт
+        excel_file = fll_calculator.generate_detailed_excel_report(results)
+        
+        if excel_file is None:
+            await callback.answer("❌ Ошибка при создании отчёта!")
+            return
+        
+        # Создаём имя файла с периодом и текущей датой
+        current_date = datetime.now().strftime('%Y-%m-%d_%H-%M')
+        period_suffix = {
+            "week": "неделя",
+            "month": "месяц", 
+            "half_year": "полгода",
+            "year": "год",
+            "all": "все_время"
+        }.get(period, period)
+        filename = f"FLL_отчёт_{period_suffix}_{current_date}.xlsx"
+        
+        # Отправляем файл
+        await callback.message.answer_document(
+            document=types.BufferedInputFile(
+                excel_file.getvalue(),
+                filename=filename
+            ),
+            caption=f"📊 **Детальный отчёт FLL за {period_name}**\n\n"
+                   "Файл содержит:\n"
+                   "• Общую статистику\n"
+                   "• Разбивку по миссиям\n"
+                   "• Сводку по миссиям"
+        )
+        
+        await callback.answer("✅ Отчёт отправлен!")
+        
+    except Exception as e:
+        await callback.answer(f"Ошибка при создании отчёта: {str(e)}")
 
 
 

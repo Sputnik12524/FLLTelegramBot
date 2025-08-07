@@ -1,4 +1,8 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+import pandas as pd
+from io import BytesIO
+from datetime import datetime
+import json
 
 
 class FLLCalculator:
@@ -107,6 +111,11 @@ class FLLCalculator:
         """Клавиатура для просмотра результатов"""
         buttons = []
         
+        # Добавляем кнопку для просмотра отчёта
+        if results:
+            report_button = [InlineKeyboardButton(text="📊 Посмотреть отчёт", callback_data="calc_view_report")]
+            buttons.append(report_button)
+        
         for result in results:
             # Используем сохраненное имя или создаем из даты
             if result.name:
@@ -125,6 +134,27 @@ class FLLCalculator:
         back_button = [InlineKeyboardButton(text="◀️ Назад к калькулятору", callback_data="calc_back")]
         buttons.append(back_button)
         
+        return InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    def get_report_choice_keyboard(self):
+        """Клавиатура для выбора типа отчёта"""
+        buttons = [
+            [InlineKeyboardButton(text="📋 Краткий отчёт", callback_data="calc_brief_report")],
+            [InlineKeyboardButton(text="📊 Детальный отчёт (Excel)", callback_data="calc_detailed_report")],
+            [InlineKeyboardButton(text="◀️ Назад к результатам", callback_data="calc_my_results")]
+        ]
+        return InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    def get_report_period_keyboard(self, report_type):
+        """Клавиатура для выбора периода отчёта"""
+        buttons = [
+            [InlineKeyboardButton(text="📅 За неделю", callback_data=f"calc_{report_type}_week")],
+            [InlineKeyboardButton(text="📅 За месяц", callback_data=f"calc_{report_type}_month")],
+            [InlineKeyboardButton(text="📅 За полгода", callback_data=f"calc_{report_type}_half_year")],
+            [InlineKeyboardButton(text="📅 За год", callback_data=f"calc_{report_type}_year")],
+            [InlineKeyboardButton(text="📅 За всё время", callback_data=f"calc_{report_type}_all")],
+            [InlineKeyboardButton(text="◀️ Назад к выбору отчёта", callback_data="calc_view_report")]
+        ]
         return InlineKeyboardMarkup(inline_keyboard=buttons)
     
     def get_result_detail_keyboard(self, result_id):
@@ -207,6 +237,174 @@ class FLLCalculator:
     def get_max_possible_score(self):
         """Возвращает максимально возможный счет"""
         return sum(mission["max_points"] for mission in self.missions.values())
+    
+    def generate_brief_report(self, results):
+        """Генерирует краткий отчёт в виде текста"""
+        if not results:
+            return "📋 **Краткий отчёт**\n\nНет сохранённых результатов для отчёта."
+        
+        report = "📊 **Общая статистика:**\n"
+        report += f"• Всего результатов: {len(results)}\n"
+        
+        # Подсчитываем статистику
+        total_scores = [r.total_score for r in results]
+        avg_score = sum(total_scores) / len(total_scores) if total_scores else 0
+        max_score = max(total_scores) if total_scores else 0
+        min_score = min(total_scores) if total_scores else 0
+        
+        report += f"• Средний балл: {avg_score:.1f}\n"
+        report += f"• Максимальный балл: {max_score}\n"
+        report += f"• Минимальный балл: {min_score}\n\n"
+        
+        # Анализ прогресса
+        if len(results) > 1:
+            first_result = results[-1]  # Самый старый результат
+            last_result = results[0]    # Самый новый результат
+            
+            progress = last_result.total_score - first_result.total_score
+            progress_text = "📈" if progress > 0 else "📉" if progress < 0 else "➡️"
+            report += f"{progress_text} **Прогресс:** {progress:+d} баллов\n\n"
+        
+        # Последние 5 результатов
+        recent_results = results[:5]
+        report += f"📅 **Последние результаты:**\n"
+        for i, result in enumerate(recent_results, 1):
+            # Обрабатываем как строку ISO, так и объект datetime
+            if hasattr(result.created_at, 'strftime'):
+                date_str = result.created_at.strftime('%d.%m.%Y')
+            else:
+                # Если это строка ISO, преобразуем в datetime
+                from datetime import datetime
+                created_at = datetime.fromisoformat(result.created_at)
+                date_str = created_at.strftime('%d.%m.%Y')
+            
+            percentage = (result.total_score / result.max_possible_score * 100) if result.max_possible_score > 0 else 0
+            report += f"{i}. {date_str}: {result.total_score}/{result.max_possible_score} ({percentage:.1f}%)\n"
+        
+        return report
+    
+    def generate_detailed_excel_report(self, results):
+        """Генерирует детальный отчёт в формате Excel"""
+        if not results:
+            return None
+        
+        # Создаём Excel файл в памяти
+        output = BytesIO()
+        
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            # Лист 1: Общая статистика
+            stats_data = []
+            for result in results:
+                # Обрабатываем как строку ISO, так и объект datetime
+                if hasattr(result.created_at, 'strftime'):
+                    date_str = result.created_at.strftime('%d.%m.%Y %H:%M')
+                else:
+                    # Если это строка ISO, преобразуем в datetime
+                    from datetime import datetime
+                    created_at = datetime.fromisoformat(result.created_at)
+                    date_str = created_at.strftime('%d.%m.%Y %H:%M')
+                
+                percentage = (result.total_score / result.max_possible_score * 100) if result.max_possible_score > 0 else 0
+                stats_data.append({
+                    'Дата': date_str,
+                    'Общий балл': result.total_score,
+                    'Максимальный балл': result.max_possible_score,
+                    'Процент выполнения': f"{percentage:.1f}%",
+                    'Название': result.name or f"Результат от {date_str}"
+                })
+            
+            stats_df = pd.DataFrame(stats_data)
+            stats_df.to_excel(writer, sheet_name='Общая статистика', index=False)
+            
+            # Добавляем расширенную сводку по результатам (лист 'Сводка')
+            if results:
+                summary_rows = []
+                for result in results:
+                    # Дата
+                    if hasattr(result.created_at, 'strftime'):
+                        date_str = result.created_at.strftime('%d.%m.%Y %H:%M')
+                    else:
+                        from datetime import datetime
+                        created_at = datetime.fromisoformat(result.created_at)
+                        date_str = created_at.strftime('%d.%m.%Y %H:%M')
+                    # Количество выполненных миссий
+                    done_missions = [
+                        self.missions.get(m_id, {}).get('name', m_id)
+                        for m_id, score in result.mission_scores.items() if score > 0
+                    ]
+                    num_done = len(done_missions)
+                    done_str = ', '.join(done_missions) if done_missions else '-'
+                    percentage = (result.total_score / result.max_possible_score * 100) if result.max_possible_score > 0 else 0
+                    summary_rows.append({
+                        'Дата': date_str,
+                        'Общий балл': result.total_score,
+                        'Выполнено миссий': num_done,
+                        'Список выполненных миссий': done_str,
+                        'Максимальный балл': result.max_possible_score,
+                        'Процент выполнения': f"{percentage:.1f}%"
+                    })
+                summary_df = pd.DataFrame(summary_rows)
+                summary_df.to_excel(writer, sheet_name='Сводка', index=False)
+            
+            # Лист 2: Детальная разбивка по миссиям
+            missions_data = []
+            for result in results:
+                # Обрабатываем как строку ISO, так и объект datetime
+                if hasattr(result.created_at, 'strftime'):
+                    date_str = result.created_at.strftime('%d.%m.%Y %H:%M')
+                else:
+                    # Если это строка ISO, преобразуем в datetime
+                    from datetime import datetime
+                    created_at = datetime.fromisoformat(result.created_at)
+                    date_str = created_at.strftime('%d.%m.%Y %H:%M')
+                
+                for mission_id, score in result.mission_scores.items():
+                    mission_name = self.missions.get(mission_id, {}).get('name', mission_id)
+                    max_points = self.missions.get(mission_id, {}).get('max_points', 0)
+                    missions_data.append({
+                        'Дата': date_str,
+                        'Миссия': mission_name,
+                        'Балл': score,
+                        'Максимум': max_points,
+                        'Процент': f"{(score / max_points * 100):.1f}%" if max_points > 0 else "0%"
+                    })
+            
+            missions_df = pd.DataFrame(missions_data)
+            missions_df.to_excel(writer, sheet_name='Разбивка по миссиям', index=False)
+            
+            # Лист 3: Сводная таблица по миссиям
+            pivot_data = []
+            for mission_id, mission_data in self.missions.items():
+                mission_name = mission_data['name']
+                max_points = mission_data['max_points']
+                
+                # Собираем все баллы за эту миссию
+                mission_scores = []
+                for result in results:
+                    if mission_id in result.mission_scores:
+                        mission_scores.append(result.mission_scores[mission_id])
+                
+                if mission_scores:
+                    avg_score = sum(mission_scores) / len(mission_scores)
+                    max_score = max(mission_scores)
+                    min_score = min(mission_scores)
+                else:
+                    avg_score = max_score = min_score = 0
+                
+                pivot_data.append({
+                    'Миссия': mission_name,
+                    'Максимальный балл': max_points,
+                    'Средний балл': f"{avg_score:.1f}",
+                    'Максимальный достигнутый': max_score,
+                    'Минимальный достигнутый': min_score,
+                    'Количество попыток': len(mission_scores)
+                })
+            
+            pivot_df = pd.DataFrame(pivot_data)
+            pivot_df.to_excel(writer, sheet_name='Сводка по миссиям', index=False)
+        
+        output.seek(0)
+        return output
 
 # Создаем глобальный экземпляр калькулятора
 fll_calculator = FLLCalculator()
