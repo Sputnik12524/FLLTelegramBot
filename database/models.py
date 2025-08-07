@@ -35,6 +35,7 @@ class UserTeams(Base, AsyncAttrs):
     city: Mapped[str] = mapped_column(String(100))
     number: Mapped[int] = mapped_column(Integer, unique=True,
                                         index=True)  # <<< number должен быть UNIQUE и INDEXED для ForeignKey
+    password: Mapped[str] = mapped_column(String(30), unique=True)
 
     users: Mapped[List['User']] = relationship(back_populates='team')
 

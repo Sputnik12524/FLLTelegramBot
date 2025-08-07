@@ -9,6 +9,7 @@ from handlers.handlers import router as handlers_router
 from handlers.patent_handlers import router as patent_router
 from admins_panel.admin_keyboard import router as admin_router
 from records.record_handler import router as record_router
+from handlers.registration_handlers import router as reg_router
 from database.engine import proceed_schemas, async_session_factory
 from database.middleware import DbSessionMiddleware
 from database.models import User
@@ -55,7 +56,8 @@ async def main():
         handlers_router,
         patent_router,
         admin_router,
-        record_router
+        record_router,
+        reg_router
     )
     print("Роутеры включены в диспетчер.")
     await dp.start_polling(bot)
