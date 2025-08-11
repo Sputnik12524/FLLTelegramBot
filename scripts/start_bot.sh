@@ -16,9 +16,19 @@ fi
 echo "📦 Активация виртуального окружения..."
 source venv/bin/activate
 
-# Устанавливаем зависимости
-echo "🔧 Проверка зависимостей..."
-pip install -r requirements.txt
+# Устанавливаем необходимые зависимости
+echo "🔧 Установка зависимостей..."
+if [ -f "scripts/requirements.txt" ]; then
+    echo "📋 Найден файл requirements.txt, устанавливаем зависимости..."
+    pip install -r scripts/requirements.txt
+else
+    echo "📦 Файл requirements.txt не найден, устанавливаем зависимости напрямую..."
+    pip install aiogram>=3.0.0
+    pip install sqlalchemy>=2.0.0
+    pip install aiosqlite>=0.19.0
+    pip install pandas>=2.0.0
+    pip install openpyxl>=3.1.0
+fi
 
 # Проверяем, не запущен ли уже бот
 if screen -list | grep -q "fll_bot"; then
