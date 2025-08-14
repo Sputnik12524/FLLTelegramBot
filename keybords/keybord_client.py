@@ -22,7 +22,7 @@ b5 = InlineKeyboardButton(
 )
 b6 = InlineKeyboardButton(
     text="Посмотреть расписание товарищеских встреч",
-    url="https://sputnik.lab244.ru"
+    url="https://sputnik.lab244.ru/scrimmages-calendar"
 )
 
 first_row = [b1]

@@ -15,6 +15,7 @@ from keybords.patent_kb import (
     patent_kb_client, get_input_page_keyboard, get_single_patent_view_keyboard, get_team_patents_list_keyboard,
     get_cancel_input_keyboard
 )
+from keybords.registration_keyboard import keyboard_error as kb_er
 from keybords.keybord_client import kb_client
 import database.requests as rq
 
@@ -92,7 +93,7 @@ async def publish_attachment(callback: CallbackQuery, state: FSMContext, session
         if user_obj is None or user_obj.team_id is None:
             await callback.message.answer(
                 "Вы еще не зарегистрированы в команде. Пожалуйста, сначала зарегистрируйтесь, чтобы публиковать изобретения.",
-                reply_markup=back_pt_client
+                reply_markup=kb_er
             )
             return
         await state.set_state(Publish.mission_number)
