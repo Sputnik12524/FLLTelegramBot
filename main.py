@@ -15,6 +15,7 @@ from database.middleware import DbSessionMiddleware
 from database.models import User
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from scheduler import init_reminder_scheduler
 
 
 
@@ -60,7 +61,17 @@ async def main():
         reg_router
     )
     print("Роутеры включены в диспетчер.")
-    await dp.start_polling(bot)
+    
+    # Инициализация и запуск планировщика напоминаний
+    scheduler = init_reminder_scheduler(bot)
+    await scheduler.start()
+    print("Планировщик напоминаний запущен.")
+    
+    try:
+        await dp.start_polling(bot)
+    finally:
+        # Останавливаем планировщик при завершении работы
+        await scheduler.stop()
 
 
 if __name__ == '__main__':

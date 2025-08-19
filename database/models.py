@@ -20,6 +20,7 @@ class User(Base, AsyncAttrs):
     id: Mapped[int] = mapped_column(primary_key=True)
     tg_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     team_id: Mapped[Optional[int]] = mapped_column(ForeignKey('teams.id'), nullable=True)
+    last_photo_reminder: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     team: Mapped['UserTeams'] = relationship(back_populates='users')
 

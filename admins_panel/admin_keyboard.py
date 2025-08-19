@@ -7,6 +7,7 @@ from database.models import User, UserTeams
 from database.engine import async_session_factory
 import os
 from sqlalchemy.ext.asyncio import async_session
+from scheduler import get_reminder_scheduler
 
 # Пароль для админ-панели
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
@@ -25,6 +26,7 @@ def get_admin_keyboard():
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="👥 Список команд", callback_data="admin_teams")],
         [InlineKeyboardButton(text="🏆 Проверка рекордов", callback_data="admin_records")],
+        [InlineKeyboardButton(text="📸 Управление напоминаниями", callback_data="admin_reminders")],
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast")],
         [InlineKeyboardButton(text="🗑 Очистить данные", callback_data="admin_clear")],
         [InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_refresh")],
@@ -300,3 +302,185 @@ def remove_keyboard():
     """Убрать клавиатуру"""
     from aiogram.types import ReplyKeyboardRemove
     return ReplyKeyboardRemove()
+
+def get_reminders_keyboard():
+    """Клавиатура управления напоминаниями"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Статус напоминаний", callback_data="reminders_status")],
+        [InlineKeyboardButton(text="📤 Отправить напоминание всем", callback_data="reminders_send_all")],
+        [InlineKeyboardButton(text="📱 Отправить конкретному пользователю", callback_data="reminders_send_user")],
+        [InlineKeyboardButton(text="⬅️ Назад к панели", callback_data="admin_back")]
+    ])
+
+class AdminReminder(StatesGroup):
+    waiting_user_id = State()
+
+@router.callback_query(F.data == "admin_reminders")
+async def admin_show_reminders(callback: CallbackQuery):
+    """Показывает меню управления напоминаниями"""
+    scheduler = get_reminder_scheduler()
+    
+    if scheduler is None:
+        await callback.message.edit_text(
+            "❌ **Планировщик не инициализирован**\n\n"
+            "Система напоминаний не запущена.",
+            reply_markup=get_back_to_admin_keyboard(),
+            parse_mode="Markdown"
+        )
+        return
+    
+    reminders_text = (
+        "📸 **УПРАВЛЕНИЕ НАПОМИНАНИЯМИ**\n\n"
+        "Система автоматических напоминаний о присылке фотографий:\n\n"
+        "• Напоминания отправляются раз в 2 недели\n"
+        "• При получении фото таймер сбрасывается\n"
+        "• Можно отправить напоминание вручную\n\n"
+        "Выберите действие:"
+    )
+    
+    await callback.message.edit_text(
+        reminders_text,
+        reply_markup=get_reminders_keyboard(),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "reminders_status")
+async def show_reminders_status(callback: CallbackQuery):
+    """Показывает статус напоминаний для всех пользователей"""
+    try:
+        scheduler = get_reminder_scheduler()
+        
+        if scheduler is None:
+            await callback.answer("❌ Планировщик не инициализирован!")
+            return
+        
+        status_list = await scheduler.get_users_reminder_status()
+        
+        if not status_list:
+            await callback.message.edit_text(
+                "📊 **СТАТУС НАПОМИНАНИЙ**\n\n"
+                "❌ Нет зарегистрированных пользователей.",
+                reply_markup=get_back_to_admin_keyboard(),
+                parse_mode="Markdown"
+            )
+            return
+        
+        # Подсчитываем статистику
+        total_users = len(status_list)
+        need_reminder = sum(1 for user in status_list if user['needs_reminder'])
+        have_reminder = total_users - need_reminder
+        
+        status_text = (
+            "📊 **СТАТУС НАПОМИНАНИЙ**\n\n"
+            f"👥 Всего пользователей: **{total_users}**\n"
+            f"🔔 Нужно напоминание: **{need_reminder}**\n"
+            f"✅ Получали недавно: **{have_reminder}**\n\n"
+        )
+        
+        if need_reminder > 0:
+            status_text += "🔔 **Пользователи, нуждающиеся в напоминании:**\n"
+            for user in status_list[:10]:  # Показываем первых 10
+                if user['needs_reminder']:
+                    if user['last_reminder']:
+                        from datetime import datetime
+                        last_date = user['last_reminder'].strftime('%d.%m.%Y')
+                        status_text += f"• ID {user['tg_id']} (последнее: {last_date})\n"
+                    else:
+                        status_text += f"• ID {user['tg_id']} (никогда)\n"
+            
+            if need_reminder > 10:
+                status_text += f"... и еще {need_reminder - 10} пользователей\n"
+        
+        await callback.message.edit_text(
+            status_text,
+            reply_markup=get_back_to_admin_keyboard(),
+            parse_mode="Markdown"
+        )
+        await callback.answer()
+        
+    except Exception as e:
+        await callback.answer(f"Ошибка: {str(e)}")
+
+@router.callback_query(F.data == "reminders_send_all")
+async def send_reminders_to_all(callback: CallbackQuery):
+    """Отправляет напоминания всем пользователям, которым нужно"""
+    try:
+        scheduler = get_reminder_scheduler()
+        
+        if scheduler is None:
+            await callback.answer("❌ Планировщик не инициализирован!")
+            return
+        
+        # Принудительно проверяем и отправляем напоминания
+        await scheduler._check_and_send_reminders()
+        
+        await callback.message.edit_text(
+            "✅ **НАПОМИНАНИЯ ОТПРАВЛЕНЫ**\n\n"
+            "Все пользователи, которым нужно напоминание, получили сообщения.\n\n"
+            "Проверьте логи для подробной информации.",
+            reply_markup=get_back_to_admin_keyboard(),
+            parse_mode="Markdown"
+        )
+        await callback.answer("✅ Напоминания отправлены!")
+        
+    except Exception as e:
+        await callback.answer(f"Ошибка: {str(e)}")
+
+@router.callback_query(F.data == "reminders_send_user")
+async def send_reminder_to_user_start(callback: CallbackQuery, state: FSMContext):
+    """Начинает процесс отправки напоминания конкретному пользователю"""
+    await callback.message.edit_text(
+        "📱 **ОТПРАВКА НАПОМИНАНИЯ ПОЛЬЗОВАТЕЛЮ**\n\n"
+        "Введите Telegram ID пользователя (число):\n\n"
+        "Например: 123456789",
+        parse_mode="Markdown"
+    )
+    await state.set_state(AdminReminder.waiting_user_id)
+    await callback.answer()
+
+@router.message(AdminReminder.waiting_user_id)
+async def send_reminder_to_user_process(message: Message, state: FSMContext):
+    """Обрабатывает ID пользователя и отправляет напоминание"""
+    try:
+        user_id = int(message.text.strip())
+        
+        scheduler = get_reminder_scheduler()
+        if scheduler is None:
+            await message.answer("❌ Планировщик не инициализирован!")
+            await state.clear()
+            return
+        
+        # Отправляем принудительное напоминание
+        success = await scheduler.force_reminder_for_user(user_id)
+        
+        if success:
+            await message.answer(
+                f"✅ **НАПОМИНАНИЕ ОТПРАВЛЕНО**\n\n"
+                f"Пользователю с ID {user_id} отправлено напоминание.\n\n"
+                "Используйте /admin для возврата к панели.",
+                parse_mode="Markdown"
+            )
+        else:
+            await message.answer(
+                f"❌ **ОШИБКА ОТПРАВКИ**\n\n"
+                f"Не удалось отправить напоминание пользователю {user_id}.\n"
+                "Возможные причины:\n"
+                "• Пользователь заблокировал бота\n"
+                "• Неверный ID\n"
+                "• Технические проблемы\n\n"
+                "Используйте /admin для возврата к панели.",
+                parse_mode="Markdown"
+            )
+        
+        await state.clear()
+        
+    except ValueError:
+        await message.answer(
+            "❌ **НЕВЕРНЫЙ ФОРМАТ**\n\n"
+            "ID должен быть числом. Попробуйте еще раз:",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {str(e)}")
+        await state.clear()

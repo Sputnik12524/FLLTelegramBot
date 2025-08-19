@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import User, UserTeams
 from calculator import fll_calculator
-from sqlalchemy import select
+from sqlalchemy import select, update
 from datetime import datetime
 from database.models import FLLResult, User
 from aiogram import types
@@ -27,7 +27,7 @@ async def show_calculator(callback: CallbackQuery):
     try:
         keyboard = fll_calculator.get_main_keyboard(callback.from_user.id)
         await callback.message.edit_text(
-            "🧮 **Калькулятор миссий FLL - Богатый урожай**\n\n"
+            "🧮 **Калькулятор миссий Лиги Решений - Богатый урожай**\n\n"
             "Выберите миссию для установки очков:",
             reply_markup=keyboard,
             parse_mode="Markdown"
@@ -116,7 +116,7 @@ async def reset_calculator(callback: CallbackQuery):
         keyboard = fll_calculator.get_main_keyboard(callback.from_user.id)
 
         await callback.message.edit_text(
-            "🧮 **Калькулятор миссий FLL - Богатый урожай**\n\n"
+            "🧮 **Калькулятор миссий Лиги Решений - Богатый урожай**\n\n"
             "Все очки сброшены! Выберите миссию для установки очков:",
             reply_markup=keyboard,
             parse_mode="Markdown"
@@ -226,7 +226,7 @@ async def show_my_results(callback: CallbackQuery):
         if not results:
             keyboard = fll_calculator.get_main_keyboard(user_id)
             await callback.message.edit_text(
-                "🧮 **Калькулятор миссий FLL - Богатый урожай**\n\n"
+                "🧮 **Калькулятор миссий Лиги Решений - Богатый урожай**\n\n"
                 "📋 У вас пока нет сохраненных результатов.\n"
                 "Выберите миссию для установки очков:",
                 reply_markup=keyboard,
@@ -491,7 +491,7 @@ async def generate_detailed_report_with_period(callback: CallbackQuery):
                 excel_file.getvalue(),
                 filename=filename
             ),
-            caption=f"📊 **Детальный отчёт FLL за {period_name}**\n\n"
+            caption=f"📊 **Детальный отчёт по выполненным миссиям за {period_name}**\n\n"
                    "Файл содержит:\n"
                    "• Общую статистику\n"
                    "• Разбивку по миссиям\n"
@@ -504,6 +504,35 @@ async def generate_detailed_report_with_period(callback: CallbackQuery):
         await callback.answer(f"Ошибка при создании отчёта: {str(e)}")
 
 
+@router.message(F.photo)
+async def handle_photo(message: Message, session: AsyncSession):
+    """Обработчик получения фотографий от пользователей"""
+    try:
+        user_tg_id = message.from_user.id
+        
+        # Обновляем время последнего напоминания, так как пользователь прислал фото
+        await session.execute(
+            update(User)
+            .where(User.tg_id == user_tg_id)
+            .values(last_photo_reminder=datetime.now())
+        )
+        await session.commit()
+        
+        # Отправляем подтверждение получения фото
+        responses = [
+            "📸 Отличное фото! Спасибо, что поделился! 😊\n Если захочешь посмотреть свои прошлые фото, то просто нажми на хештег #фоторобота",
+            "📷 Фото получено! Круто выглядит! 👍 \n Если захочешь посмотреть свои прошлые фото, то просто нажми на хештег #фоторобота",
+            "📸 Спасибо за фотографию! Продолжай в том же духе! 🔥 \n Если захочешь посмотреть свои прошлые фото, то просто нажми на хештег #фоторобота",
+            "📷 Классное фото! Ждем еще! 😄 \n Если захочешь посмотреть свои прошлые фото, то просто нажми на хештег #фоторобота",
+            "📸 Фото сохранено! Отлично! ⭐ \n Если захочешь посмотреть свои прошлые фото, то просто нажми на хештег #фоторобота"
+        ]
+        
+        import random
+        response = random.choice(responses)
+        await message.reply(response)
+        
+    except Exception as e:
+        await message.reply("😅 Упс! Что-то пошло не так, но фото мы получили!")
 
 
 
