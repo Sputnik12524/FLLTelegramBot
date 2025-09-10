@@ -13,7 +13,7 @@ from database.models import User, Patent
 from keybords.patent_kb import (
     zero_patent_kb_client, back_pt_client, confirm_pt_client, get_patent_menu_keyboard,
     patent_kb_client, get_input_page_keyboard, get_single_patent_view_keyboard, get_team_patents_list_keyboard,
-    get_cancel_input_keyboard, get_input_mission_pt_keyboard
+    get_cancel_input_keyboard
 )
 from keybords.registration_keyboard import keyboard_error as kb_er
 from keybords.keybord_client import kb_client
@@ -99,7 +99,7 @@ async def publish_attachment(callback: CallbackQuery, state: FSMContext, session
         await state.set_state(Publish.mission_number)
         await callback.message.edit_text(
             "Выберите миссию(-и), в которых используется насадка.\nВведите названия миссий через запятую",
-            reply_markup=get_input_mission_pt_keyboard()
+            reply_markup=get_cancel_input_keyboard()
         )
     except Exception as e:
         await callback.message.answer("Ошибка при проверке пользователя. Попробуйте позже.", reply_markup=back_pt_client)
@@ -151,7 +151,7 @@ async def send_patents_page(
             caption_text = (
                 f"**Название:** {patent.caption}\n"
                 f"**Описание:** {patent.description}\n"
-                f"**Миссии:** {patent.missions}\n"
+                f"**Миссии:** {', '.join(map(str, patent.missions))}\n"
                 f"**Команда №:** {patent.team_number}\n"
                 f"**Опубликовано:** {patent.created_at.strftime('%Y-%m-%d %H:%M')}"
             )
@@ -450,7 +450,7 @@ async def return_to_main_menu_from_patents(callback: CallbackQuery, state: FSMCo
     await callback.message.answer("Вы вернулись в главное меню.", reply_markup=kb_client)
 
 
-@router.message(F.data == "input_mission_pt")
+@router.message(Publish.mission_number)
 async def process_mission_number(message: Message, state: FSMContext):
     global proceed_missions
     proceed_missions = get_missions_input_and_validate(message.text)

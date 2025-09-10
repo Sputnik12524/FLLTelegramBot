@@ -6,11 +6,11 @@ from aiogram.filters import Command
 from database.models import User, UserTeams
 from database.engine import async_session_factory
 import os
-from sqlalchemy.ext.asyncio import async_session
+from sqlalchemy.ext.asyncio import AsyncSession
 from scheduler import get_reminder_scheduler
 
 # Пароль для админ-панели
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "48)a$7yHRI6BM%_l5R(s")
 
 class AdminAuth(StatesGroup):
     waiting_password = State()
@@ -64,10 +64,29 @@ def get_records_filter_keyboard():
 @router.callback_query(F.data == "admin_records")
 async def show_admin_records_menu(callback: CallbackQuery):
     """Показать меню проверки рекордов"""
-    pending_count = len([r for r in submitted_records if r['status'] == 'pending'])
-    approved_count = len([r for r in submitted_records if r['status'] == 'approved'])
-    rejected_count = len([r for r in submitted_records if r['status'] == 'rejected'])
-    total_count = len(submitted_records)
+    # Получаем данные из базы данных
+    async with async_session_factory() as session:
+        from database.models import SubmittedRecord
+        from sqlalchemy import select, func
+        
+        # Подсчитываем рекорды по статусам
+        pending_result = await session.execute(
+            select(func.count(SubmittedRecord.id)).where(SubmittedRecord.status == "pending")
+        )
+        pending_count = pending_result.scalar() or 0
+        
+        approved_result = await session.execute(
+            select(func.count(SubmittedRecord.id)).where(SubmittedRecord.status == "approved")
+        )
+        approved_count = approved_result.scalar() or 0
+        
+        rejected_result = await session.execute(
+            select(func.count(SubmittedRecord.id)).where(SubmittedRecord.status == "rejected")
+        )
+        rejected_count = rejected_result.scalar() or 0
+        
+        total_result = await session.execute(select(func.count(SubmittedRecord.id)))
+        total_count = total_result.scalar() or 0
     
     records_text = (
         "🏆 **УПРАВЛЕНИЕ РЕКОРДАМИ**\n"
@@ -89,7 +108,14 @@ async def show_admin_records_menu(callback: CallbackQuery):
 @router.callback_query(F.data == "admin_records_pending")
 async def show_pending_records(callback: CallbackQuery):
     """Показать рекорды на проверке"""
-    pending_records = [r for r in submitted_records if r['status'] == 'pending']
+    async with async_session_factory() as session:
+        from database.models import SubmittedRecord
+        from sqlalchemy import select
+        
+        result = await session.execute(
+            select(SubmittedRecord).where(SubmittedRecord.status == "pending")
+        )
+        pending_records = result.scalars().all()
     
     if not pending_records:
         await callback.message.edit_text(
@@ -106,9 +132,9 @@ async def show_pending_records(callback: CallbackQuery):
     
     for i, record in enumerate(pending_records[:5], 1):  # Показываем первые 5
         records_text += (
-            f"**{i}. {record['first_name']}** - {record['score']} очков\n"
-            f"   📅 {record['date']} | ⏰ {record['submission_time']}\n"
-            f"   🆔 `{record['id']}`\n\n"
+            f"**{i}. {record.first_name}** - {record.score} очков\n"
+            f"   📅 {record.date} | ⏰ {record.created_at.strftime('%d.%m.%Y %H:%M')}\n"
+            f"   🆔 `{record.record_id}`\n\n"
         )
     
     if len(pending_records) > 5:
@@ -116,6 +142,12 @@ async def show_pending_records(callback: CallbackQuery):
     
     records_text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n💡 Нажмите на ID рекорда для детального просмотра"
     
+    await callback.message.edit_text(
+        records_text,
+        reply_markup=get_back_to_admin_keyboard(),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
 
 @router.message(Command('admin'))
 async def admin_login(message: Message, state: FSMContext):
@@ -123,8 +155,7 @@ async def admin_login(message: Message, state: FSMContext):
     print(f"Admin command received from user {message.from_user.id}")  # Отладка
     await message.answer(
         "🔐 **Вход в админ-панель**\n\n"
-        f"Введите пароль:\n\n"
-        f"*Подсказка: текущий пароль - {ADMIN_PASSWORD}*",  # Временно для отладки
+        f"Введите пароль:\n\n",
         parse_mode="Markdown"
     )
     await state.set_state(AdminAuth.waiting_password)
@@ -191,13 +222,15 @@ async def admin_refresh_panel(callback: CallbackQuery):
 async def admin_show_stats(callback: CallbackQuery):
     """Показывает статистику пользователей"""
     try:
-        async with async_session() as session:
+        async with async_session_factory() as session:
+            from sqlalchemy import select, func
+            
             # Подсчитываем количество пользователей
-            users_result = await session.execute("SELECT COUNT(*) FROM users")
+            users_result = await session.execute(select(func.count(User.id)))
             users_count = users_result.scalar()
             
             # Подсчитываем количество команд
-            teams_result = await session.execute("SELECT COUNT(*) FROM user_teams")
+            teams_result = await session.execute(select(func.count(UserTeams.id)))
             teams_count = teams_result.scalar()
             
         stats_text = (
@@ -219,11 +252,15 @@ async def admin_show_stats(callback: CallbackQuery):
 async def admin_show_teams(callback: CallbackQuery):
     """Показывает список команд"""
     try:
-        async with async_session() as session:
+        async with async_session_factory() as session:
+            from sqlalchemy import select
+            
             result = await session.execute(
-                "SELECT team, city, number FROM user_teams ORDER BY id DESC LIMIT 10"
+                select(UserTeams.team, UserTeams.city, UserTeams.number)
+                .order_by(UserTeams.id.desc())
+                .limit(10)
             )
-            teams = result.fetchall()
+            teams = result.all()
             
         if teams:
             teams_text = "👥 **Список команд (последние 10):**\n\n"

@@ -9,19 +9,19 @@ b2 = InlineKeyboardButton(
     callback_data="missions"
 )
 b3 = InlineKeyboardButton(
-    text="Посмотреть/запатентовать инновационные решения",
+    text="Инновационные решения",
     callback_data="patent"
 )
 b4 = InlineKeyboardButton(
-    text="Посмотреть матчи команд",
-    callback_data="matches"
+    text="Мои доработки",
+    callback_data="changes"
 )
 b5 = InlineKeyboardButton(
-    text="Актуальный рекорд России",
+    text="Рекорды России",
     callback_data="records"
 )
 b6 = InlineKeyboardButton(
-    text="Посмотреть расписание товарищеских встреч",
+    text="Тов. встречи",
     url="https://sputnik.lab244.ru/fll-scrimmages-calendar"
 )
 

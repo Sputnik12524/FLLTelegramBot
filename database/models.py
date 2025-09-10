@@ -91,3 +91,26 @@ class FLLResult(Base, AsyncAttrs):
     
     def __repr__(self):
         return f"<FLLResult(id={self.id}, user_tg_id={self.user_tg_id}, total_score={self.total_score})>"
+
+
+class Improvement(Base, AsyncAttrs):
+    __tablename__ = 'improvements'
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    team_id: Mapped[Optional[int]] = mapped_column(ForeignKey('teams.id'), nullable=True)
+    
+    # Основные поля доработки
+    improvement_type: Mapped[str] = mapped_column(String(50))  # robot, code, design, etc.
+    title: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(String(1000))
+    
+    # Файлы (список ID файлов)
+    file_ids: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True)
+    
+    # Метаданные
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    
+    def __repr__(self):
+        return f"<Improvement(id={self.id}, user_tg_id={self.user_tg_id}, title='{self.title}')>"

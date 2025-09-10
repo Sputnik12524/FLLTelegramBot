@@ -16,6 +16,7 @@ from database.models import User
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from scheduler import init_reminder_scheduler
+from handlers.improvement_handlers import router as improvement_router
 
 
 
@@ -38,7 +39,7 @@ async def cmd_start(message: Message, session: AsyncSession):
         session.add(new_user)
         await session.commit()
 
-    await message.answer("Привет! Этот бот был разработан для Лиги Решений и предоставляет следующие полезные функции: ", reply_markup=kb_client)
+    await message.answer("Привет! Этот бот был разработан для Лиги Решений и предоставляет следующие полезные функции: \nЕсли вы столкнулись с проблемой, напишите нам в чат: https://t.me/+544PCMqLwrU3NWEy  ", reply_markup=kb_client)
 
 
 async def main():
@@ -58,7 +59,8 @@ async def main():
         patent_router,
         admin_router,
         record_router,
-        reg_router
+        reg_router,
+        improvement_router
     )
     print("Роутеры включены в диспетчер.")
     

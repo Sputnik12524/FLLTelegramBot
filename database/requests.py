@@ -142,3 +142,94 @@ async def delete_fll_result(
         return True
     
     return False
+
+
+# Функции для работы с рекордами
+async def save_submitted_record(
+        record_id: str,
+        user_tg_id: int,
+        team_id: int,
+        username: str,
+        first_name: str,
+        date: str,
+        score: int,
+        video_data: dict,
+        session: AsyncSession
+) -> None:
+    """Сохраняет отправленный рекорд в базу данных"""
+    from database.models import SubmittedRecord
+    
+    new_record = SubmittedRecord(
+        record_id=record_id,
+        user_tg_id=user_tg_id,
+        team_id=team_id,
+        username=username,
+        first_name=first_name,
+        date=date,
+        score=score,
+        video_data=video_data,
+        status="pending"
+    )
+    
+    session.add(new_record)
+    await session.commit()
+
+
+async def get_top_records(session: AsyncSession, limit: int = 10) -> List:
+    """Получает топ рекордов"""
+    from database.models import Record
+    
+    query = await session.execute(
+        select(Record)
+        .order_by(Record.result.desc())
+        .limit(limit)
+    )
+    
+    return query.scalars().all()
+
+
+async def get_russia_record(session: AsyncSession):
+    """Получает актуальный рекорд России"""
+    from database.models import Record
+    
+    query = await session.execute(
+        select(Record)
+        .order_by(Record.result.desc())
+        .limit(1)
+    )
+    
+    return query.scalar_one_or_none()
+
+
+async def get_user_records(user_tg_id: int, session: AsyncSession) -> List:
+    """Получает одобренные рекорды пользователя"""
+    from database.models import Record, User
+    
+    # Получаем team_id пользователя
+    user_query = await session.execute(
+        select(User).where(User.tg_id == user_tg_id)
+    )
+    user = user_query.scalar_one_or_none()
+    
+    if not user or not user.team_id:
+        return []
+    
+    # Получаем рекорды команды
+    records_query = await session.execute(
+        select(Record).where(Record.r_team == user.team_id)
+    )
+    
+    return records_query.scalars().all()
+
+
+async def get_user_submitted_records(user_tg_id: int, session: AsyncSession) -> List:
+    """Получает отправленные рекорды пользователя"""
+    from database.models import SubmittedRecord
+    
+    query = await session.execute(
+        select(SubmittedRecord)
+        .where(SubmittedRecord.user_tg_id == user_tg_id)
+        .order_by(SubmittedRecord.created_at.desc())
+    )
+    
+    return query.scalars().all()

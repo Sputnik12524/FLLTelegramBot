@@ -4,8 +4,8 @@ from datetime import datetime, timedelta
 from typing import List
 from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
-from database.models import User
+from sqlalchemy import select, update, exists, and_, or_
+from database.models import User, Improvement
 from database.engine import async_session_factory
 
 # Настройка логирования
@@ -87,11 +87,32 @@ class ReminderScheduler:
         # Дата 2 недели назад
         two_weeks_ago = datetime.now() - timedelta(weeks=2)
         
-        # Получаем пользователей, которым либо никогда не отправлялось напоминание,
-        # либо последнее напоминание было более 2 недель назад
+        # Условие: у пользователя есть хотя бы одна доработка
+        has_any_improvement = exists(
+            select(1).where(Improvement.user_tg_id == User.tg_id)
+        )
+
+        # Условие: у пользователя есть доработка, созданная 2+ недели назад
+        has_old_improvement = exists(
+            select(1).where(
+                and_(
+                    Improvement.user_tg_id == User.tg_id,
+                    Improvement.created_at <= two_weeks_ago
+                )
+            )
+        )
+
+        # Напоминания отправляются только тем, кто уже загружал доработки, и:
+        #  - либо напоминаний ещё не было, но первая/последняя доработка была 2+ недели назад
+        #  - либо последнее напоминание было 2+ недели назад
         query = select(User).where(
-            (User.last_photo_reminder.is_(None)) |
-            (User.last_photo_reminder <= two_weeks_ago)
+            and_(
+                has_any_improvement,
+                or_(
+                    and_(User.last_photo_reminder.is_(None), has_old_improvement),
+                    (User.last_photo_reminder <= two_weeks_ago)
+                )
+            )
         )
         
         result = await session.execute(query)
@@ -103,7 +124,7 @@ class ReminderScheduler:
             "📸 Привет! Напоминаю о важном!\n\n"
             "Уже прошло 2 недели с последнего напоминания. "
             "Не забудь прислать фотографию! 📷\n\n"
-            "Присылай свои фото через бота с подписью #фоторобота - это поможет тебе отслеживать прогресс! 😊"
+            "Присылай фото своего робота через бота - это поможет тебе отслеживать прогресс! 😊"
         )
         
         try:
