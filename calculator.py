@@ -7,17 +7,55 @@ import json
 
 class FLLCalculator:
     def __init__(self):
+        # Глобальный максимум сезона (итог должен быть 700)
+        self.global_max_total = 700
         self.missions = {
-            "mission_1": {"name": "Точность", "max_points": 20},
-            "mission_2": {"name": "Сбор урожая", "max_points": 30},
-            "mission_3": {"name": "Доставка продуктов", "max_points": 25},
-            "mission_4": {"name": "Животные на ферме", "max_points": 20},
-            "mission_5": {"name": "Переработка отходов", "max_points": 15},
-            "mission_6": {"name": "Солнечная энергия", "max_points": 20},
-            "mission_7": {"name": "Водные ресурсы", "max_points": 25},
-            "mission_8": {"name": "Инновационный проект", "max_points": 30},
-            "mission_9": {"name": "Исследование", "max_points": 15},
-            "mission_10": {"name": "Командная работа", "max_points": 20},
+            "mission_1": {"name": "Проверка оборудования", "max_points": 40},
+            "mission_2": {"name": "Инновационный проект", "max_points": 30},
+            "mission_3": {"name": "Светофор", "max_points": 30},
+            "mission_4": {"name": "Надземный пешеходный переход", "max_points": 30},
+            "mission_5": {"name": "Ямочный ремонт", "max_points": 25},
+            "mission_6": {"name": "Самокаты", "max_points": 20},
+            "mission_7": {"name": "Парковка самокатов", "max_points": 80},
+            "mission_8": {"name": "Железнодорожный переезд", "max_points": 45},
+            "mission_9": {"name": "Лежачий полицейский", "max_points": 25},
+            "mission_10": {"name": "Эвакуатор", "max_points": 50},
+            "mission_11": {"name": "Дорожное ограждение", "max_points": 25},
+            "mission_12": {"name": "Автобус", "max_points": 30},
+            "mission_13": {"name": 'Знак"СТОП!"', "max_points": 35},
+            "mission_14": {"name": "Автобусная остановка", "max_points": 40},
+            "mission_15": {"name": "Парковка", "max_points": 50},
+            "mission_16": {"name": "Взаимодействие", "max_points": 40},
+            "mission_17": {"name": "Жетоны точности", "max_points": 60},
+        }
+        # Наборы пользовательских кнопок для отдельных миссий.
+        # Пример: для проверки оборудования показываем только 0/30/40
+        # Чтобы настроить другие миссии, добавьте сюда: "mission_X": [список баллов]
+        self.mission_point_presets = {
+            "mission_1": [0, 30, 40],
+            "mission_2": [0, 20, 30],
+            "mission_3": [0, 15, 30],
+            "mission_4": [0, 20, 30],
+            "mission_5": [0, 25],
+            "mission_8": [0, 25, 45],
+            "mission_9": [0, 25],
+            "mission_10": [0, 10, 50],
+            "mission_11": [0, 25],
+            "mission_12": [0, 10, 30],
+            "mission_13": [0, 35],
+            "mission_14": [0, 20, 40],
+            "mission_15": [0, 20, 30, 50],
+            "mission_16": [0, 40],
+            "mission_17": [0, 15, 25, 35, 35, 60],
+        }
+        # Правила миссий, где нужно вводить/выбирать количество
+        # Используем отображение количества в баллы через коэффициент, при этом
+        # под капотом формируем стандартные callback с конкретным числом баллов.
+        self.count_mission_rules = {
+            # Самокаты: 10 баллов за каждый; максимум 2 шт = 20 баллов
+            "mission_6": {"points_per_unit": 10, "max_units": 2, "unit_label": "шт"},
+            # Парковка самокатов: 20 баллов за каждый; максимум 4 шт = 80 баллов
+            "mission_7": {"points_per_unit": 20, "max_units": 4, "unit_label": "шт"},
         }
         self.user_scores = {}
     
@@ -35,7 +73,7 @@ class FLLCalculator:
         
         # Кнопки управления
         total_score = self.get_total_score(user_id) if user_id else 0
-        max_total = sum(mission["max_points"] for mission in self.missions.values())
+        max_total = self.get_max_possible_score()
         
         control_buttons = [
             InlineKeyboardButton(text=f"📊 Итого: {total_score}/{max_total}", callback_data="calc_total"),
@@ -66,30 +104,62 @@ class FLLCalculator:
         buttons = []
         current_row = []
         
-        # Создаем кнопки с очками (по 5 очков)
-        for points in range(0, max_points + 1, 5):
-            if points <= max_points:
+        # 1) Пользовательские пресеты баллов — если заданы, используем их
+        if mission_id in self.mission_point_presets:
+            for points in self.mission_point_presets[mission_id]:
+                # гарантируем, что не превышаем максимум миссии
+                safe_points = min(points, max_points)
                 button = InlineKeyboardButton(
                     text=str(points),
+                    callback_data=f"calc_set_{mission_id}_{safe_points}"
+                )
+                current_row.append(button)
+                if len(current_row) == 3:  # 3 кнопки в ряд более удобно для кастомных наборов
+                    buttons.append(current_row)
+                    current_row = []
+        # 2) Особые миссии: выбор количества (конвертируем количество в баллы)
+        elif mission_id in self.count_mission_rules:
+            rule = self.count_mission_rules[mission_id]
+            ppu = rule["points_per_unit"]
+            max_units = rule["max_units"]
+            unit_label = rule.get("unit_label", "шт")
+
+            for count in range(0, max_units + 1):
+                points = count * ppu
+                button = InlineKeyboardButton(
+                    text=f"{count} {unit_label} ({points})",
                     callback_data=f"calc_set_{mission_id}_{points}"
                 )
                 current_row.append(button)
-                
-                if len(current_row) == 4:  # 4 кнопки в ряд
+                if len(current_row) == 3:  # 3 кнопки в ряд для компактности
                     buttons.append(current_row)
                     current_row = []
+        else:
+            # Создаем кнопки с очками (по 5 очков)
+            for points in range(0, max_points + 1, 5):
+                if points <= max_points:
+                    button = InlineKeyboardButton(
+                        text=str(points),
+                        callback_data=f"calc_set_{mission_id}_{points}"
+                    )
+                    current_row.append(button)
+                    
+                    if len(current_row) == 4:  # 4 кнопки в ряд
+                        buttons.append(current_row)
+                        current_row = []
         
         # Добавляем оставшиеся кнопки
         if current_row:
             buttons.append(current_row)
         
-        # Добавляем максимальное значение, если его нет в списке
-        if max_points % 5 != 0:
-            max_button = InlineKeyboardButton(
-                text=str(max_points),
-                callback_data=f"calc_set_{mission_id}_{max_points}"
-            )
-            buttons.append([max_button])
+        if mission_id not in self.count_mission_rules and mission_id not in self.mission_point_presets:
+            # Добавляем максимальное значение, если его нет в списке (для обычных миссий)
+            if max_points % 5 != 0:
+                max_button = InlineKeyboardButton(
+                    text=str(max_points),
+                    callback_data=f"calc_set_{mission_id}_{max_points}"
+                )
+                buttons.append([max_button])
         
         # Кнопка назад
         back_button = InlineKeyboardButton(text="◀️ Назад к миссиям", callback_data="calc_back")
@@ -205,7 +275,7 @@ class FLLCalculator:
             for mission_id, mission_data in self.missions.items():
                 breakdown += f"⭕ {mission_data['name']}: 0/{mission_data['max_points']}\n"
             
-            max_total = sum(mission["max_points"] for mission in self.missions.values())
+            max_total = self.get_max_possible_score()
             breakdown += f"\n🎯 **Общий счет: 0/{max_total}**"
             breakdown += f"\n📈 **Процент выполнения: 0.0%**"
             return breakdown
@@ -219,7 +289,7 @@ class FLLCalculator:
             status = "✅" if score > 0 else "⭕"
             breakdown += f"{status} {mission_data['name']}: {score}/{mission_data['max_points']}\n"
         
-        max_total = sum(mission["max_points"] for mission in self.missions.values())
+        max_total = self.get_max_possible_score()
         breakdown += f"\n🎯 **Общий счет: {total}/{max_total}**"
         
         # Добавляем процент выполнения
@@ -236,6 +306,9 @@ class FLLCalculator:
     
     def get_max_possible_score(self):
         """Возвращает максимально возможный счет"""
+        # Если задан глобальный максимум сезона — возвращаем его
+        if getattr(self, "global_max_total", None):
+            return self.global_max_total
         return sum(mission["max_points"] for mission in self.missions.values())
     
     def generate_brief_report(self, results):

@@ -114,3 +114,33 @@ class Improvement(Base, AsyncAttrs):
     
     def __repr__(self):
         return f"<Improvement(id={self.id}, user_tg_id={self.user_tg_id}, title='{self.title}')>"
+
+
+class SubmittedRecord(Base, AsyncAttrs):
+    __tablename__ = 'submitted_records'
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Уникальный идентификатор заявки (строка, которая уходит админам)
+    record_id: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+
+    # Автор и команда
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey('teams.id'))
+
+    # Метаданные отправителя
+    username: Mapped[str] = mapped_column(String(100))
+    first_name: Mapped[str] = mapped_column(String(100))
+
+    # Параметры рекорда
+    date: Mapped[str] = mapped_column(String(20))  # ДД.ММ.ГГГГ
+    score: Mapped[int] = mapped_column(Integer)
+    video_data: Mapped[dict] = mapped_column(JSON)
+
+    # Статус модерации
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    admin_comment: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    def __repr__(self):
+        return f"<SubmittedRecord(record_id='{self.record_id}', user_tg_id={self.user_tg_id}, status='{self.status}')>"

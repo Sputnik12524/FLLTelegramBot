@@ -27,7 +27,7 @@ async def show_calculator(callback: CallbackQuery):
     try:
         keyboard = fll_calculator.get_main_keyboard(callback.from_user.id)
         await callback.message.edit_text(
-            "🧮 **Калькулятор миссий Лиги Решений - Богатый урожай**\n\n"
+            "🧮 Калькулятор миссий Лиги Решений - Безопасный маршрут\n\n"
             "Выберите миссию для установки очков:",
             reply_markup=keyboard,
             parse_mode="Markdown"

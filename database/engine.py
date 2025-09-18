@@ -13,9 +13,9 @@ async def proceed_schemas():
     print(f"Using DB file at: {os.path.abspath('mydatabase.db')}")
     try:
         async with async_engine.begin() as conn:
-            await conn.run_sync(Base.metadata.drop_all)
+            # Только создаем недостающие таблицы. НИЧЕГО не удаляем.
             await conn.run_sync(Base.metadata.create_all)
-        print("База данных успешно создана.")
+        print("База данных готова. Недостающие таблицы созданы (если были).")
     except Exception as e:
         print(f"Произошла ошибка: {e}")
 

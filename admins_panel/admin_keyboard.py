@@ -8,6 +8,7 @@ from database.engine import async_session_factory
 import os
 from sqlalchemy.ext.asyncio import AsyncSession
 from scheduler import get_reminder_scheduler
+from sqlalchemy import select, func
 
 # Пароль для админ-панели
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "48)a$7yHRI6BM%_l5R(s")
@@ -17,6 +18,8 @@ class AdminAuth(StatesGroup):
 
 class AdminBroadcast(StatesGroup):
     waiting_message = State()
+    waiting_confirmation = State()
+    sending_messages = State()
 
 router = Router()
 
@@ -149,6 +152,47 @@ async def show_pending_records(callback: CallbackQuery):
     )
     await callback.answer()
 
+@router.callback_query(F.data.startswith("approve_record_"))
+async def approve_record(callback: CallbackQuery):
+    record_id = callback.data.replace("approve_record_", "")
+    async with async_session_factory() as session:
+        from database.models import SubmittedRecord, Record
+        # Находим заявку
+        result = await session.execute(select(SubmittedRecord).where(SubmittedRecord.record_id == record_id))
+        submitted = result.scalar_one_or_none()
+        if not submitted:
+            await callback.answer("Заявка не найдена", show_alert=True)
+            return
+        # Создаем запись в таблице рекордов
+        rec = Record(r_team=submitted.team_id, result=submitted.score, video_id=0)
+        session.add(rec)
+        # Обновляем статус заявки
+        submitted.status = "approved"
+        await session.commit()
+    try:
+        await callback.bot.send_message(submitted.user_tg_id, "✅ Ваш рекорд одобрен! Поздравляем!")
+    except Exception:
+        pass
+    await callback.answer("Рекорд одобрен")
+
+@router.callback_query(F.data.startswith("reject_record_"))
+async def reject_record(callback: CallbackQuery):
+    record_id = callback.data.replace("reject_record_", "")
+    async with async_session_factory() as session:
+        from database.models import SubmittedRecord
+        result = await session.execute(select(SubmittedRecord).where(SubmittedRecord.record_id == record_id))
+        submitted = result.scalar_one_or_none()
+        if not submitted:
+            await callback.answer("Заявка не найдена", show_alert=True)
+            return
+        submitted.status = "rejected"
+        await session.commit()
+    try:
+        await callback.bot.send_message(submitted.user_tg_id, "❌ Ваш рекорд отклонён. Вы можете отправить новый.")
+    except Exception:
+        pass
+    await callback.answer("Рекорд отклонён")
+
 @router.message(Command('admin'))
 async def admin_login(message: Message, state: FSMContext):
     """Запрос пароля для входа в админ-панель"""
@@ -175,8 +219,6 @@ async def admin_password_check(message: Message, state: FSMContext):
         print("Password incorrect")  # Отладка
         await message.answer(
             "❌ **Неверный пароль!**\n\n"
-            f"Вы ввели: `{message.text}`\n"
-            f"Ожидался: `{ADMIN_PASSWORD}`\n\n"
             "Доступ запрещен.",
             parse_mode="Markdown"
         )
@@ -347,6 +389,24 @@ def get_reminders_keyboard():
         [InlineKeyboardButton(text="📤 Отправить напоминание всем", callback_data="reminders_send_all")],
         [InlineKeyboardButton(text="📱 Отправить конкретному пользователю", callback_data="reminders_send_user")],
         [InlineKeyboardButton(text="⬅️ Назад к панели", callback_data="admin_back")]
+    ])
+
+def get_broadcast_keyboard():
+    """Клавиатура управления рассылкой"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📝 Создать рассылку", callback_data="broadcast_create")],
+        [InlineKeyboardButton(text="📊 Статистика пользователей", callback_data="broadcast_stats")],
+        [InlineKeyboardButton(text="⬅️ Назад к панели", callback_data="admin_back")]
+    ])
+
+def get_broadcast_confirmation_keyboard():
+    """Клавиатура подтверждения рассылки"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Отправить всем", callback_data="broadcast_confirm"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="broadcast_cancel")
+        ],
+        [InlineKeyboardButton(text="✏️ Редактировать", callback_data="broadcast_edit")]
     ])
 
 class AdminReminder(StatesGroup):
@@ -521,3 +581,256 @@ async def send_reminder_to_user_process(message: Message, state: FSMContext):
     except Exception as e:
         await message.answer(f"❌ Ошибка: {str(e)}")
         await state.clear()
+
+# ==================== ОБРАБОТЧИКИ РАССЫЛКИ ====================
+
+async def get_all_users():
+    """Получает всех пользователей из базы данных"""
+    async with async_session_factory() as session:
+        result = await session.execute(select(User.tg_id))
+        return [row[0] for row in result.all()]
+
+@router.callback_query(F.data == "admin_broadcast")
+async def admin_show_broadcast_menu(callback: CallbackQuery):
+    """Показывает меню рассылки"""
+    try:
+        # Получаем статистику пользователей
+        users = await get_all_users()
+        users_count = len(users)
+        
+        broadcast_text = (
+            "📢 **УПРАВЛЕНИЕ РАССЫЛКОЙ**\n\n"
+            f"👥 Всего пользователей: **{users_count}**\n\n"
+            "Выберите действие:"
+        )
+        
+        await callback.message.edit_text(
+            broadcast_text,
+            reply_markup=get_broadcast_keyboard(),
+            parse_mode="Markdown"
+        )
+        await callback.answer()
+        
+    except Exception as e:
+        await callback.answer(f"Ошибка: {str(e)}")
+
+@router.callback_query(F.data == "broadcast_create")
+async def broadcast_start_creation(callback: CallbackQuery, state: FSMContext):
+    """Начинает создание рассылки"""
+    await callback.message.edit_text(
+        "📝 **СОЗДАНИЕ РАССЫЛКИ**\n\n"
+        "Введите текст сообщения для рассылки:\n\n"
+        "💡 Поддерживается Markdown разметка\n"
+        "💡 Можно использовать эмодзи\n"
+        "💡 Максимум 4096 символов",
+        parse_mode="Markdown"
+    )
+    await state.set_state(AdminBroadcast.waiting_message)
+    await callback.answer()
+
+@router.message(AdminBroadcast.waiting_message)
+async def broadcast_process_message(message: Message, state: FSMContext):
+    """Обрабатывает введенное сообщение для рассылки"""
+    try:
+        message_text = message.text
+        
+        if len(message_text) > 4096:
+            await message.answer(
+                "❌ **Слишком длинное сообщение!**\n\n"
+                f"Текущая длина: {len(message_text)} символов\n"
+                f"Максимум: 4096 символов\n\n"
+                "Сократите текст и попробуйте снова:",
+                parse_mode="Markdown"
+            )
+            return
+        
+        # Сохраняем сообщение в состоянии
+        await state.update_data(broadcast_message=message_text)
+        
+        # Получаем статистику пользователей
+        users = await get_all_users()
+        users_count = len(users)
+        
+        preview_text = (
+            "📢 **ПРЕДВАРИТЕЛЬНЫЙ ПРОСМОТР РАССЫЛКИ**\n\n"
+            f"👥 Получателей: **{users_count}**\n"
+            f"📝 Длина сообщения: **{len(message_text)}** символов\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "**Текст сообщения:**\n\n"
+            f"{message_text}\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Подтвердите отправку:"
+        )
+        
+        await message.answer(
+            preview_text,
+            reply_markup=get_broadcast_confirmation_keyboard(),
+            parse_mode="Markdown"
+        )
+        await state.set_state(AdminBroadcast.waiting_confirmation)
+        
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {str(e)}")
+        await state.clear()
+
+@router.callback_query(F.data == "broadcast_confirm")
+async def broadcast_confirm_sending(callback: CallbackQuery, state: FSMContext):
+    """Подтверждает отправку рассылки"""
+    try:
+        data = await state.get_data()
+        message_text = data.get('broadcast_message')
+        
+        if not message_text:
+            await callback.answer("❌ Сообщение не найдено!")
+            return
+        
+        # Получаем всех пользователей
+        users = await get_all_users()
+        users_count = len(users)
+        
+        if users_count == 0:
+            await callback.message.edit_text(
+                "❌ **НЕТ ПОЛЬЗОВАТЕЛЕЙ**\n\n"
+                "В базе данных нет пользователей для рассылки.",
+                reply_markup=get_back_to_admin_keyboard(),
+                parse_mode="Markdown"
+            )
+            await state.clear()
+            return
+        
+        # Обновляем сообщение с информацией о начале рассылки
+        await callback.message.edit_text(
+            f"📤 **ОТПРАВКА РАССЫЛКИ**\n\n"
+            f"👥 Получателей: **{users_count}**\n"
+            f"📝 Сообщение: **{len(message_text)}** символов\n\n"
+            "⏳ Начинаем отправку...",
+            parse_mode="Markdown"
+        )
+        
+        await state.set_state(AdminBroadcast.sending_messages)
+        
+        # Отправляем сообщения
+        success_count = 0
+        error_count = 0
+        
+        for i, user_id in enumerate(users, 1):
+            try:
+                await callback.bot.send_message(
+                    chat_id=user_id,
+                    text=message_text,
+                    parse_mode="Markdown"
+                )
+                success_count += 1
+                
+                # Обновляем прогресс каждые 10 сообщений
+                if i % 10 == 0 or i == users_count:
+                    progress_text = (
+                        f"📤 **ОТПРАВКА РАССЫЛКИ**\n\n"
+                        f"👥 Получателей: **{users_count}**\n"
+                        f"📝 Сообщение: **{len(message_text)}** символов\n\n"
+                        f"✅ Отправлено: **{success_count}**\n"
+                        f"❌ Ошибок: **{error_count}**\n"
+                        f"📊 Прогресс: **{i}/{users_count}** ({(i/users_count*100):.1f}%)"
+                    )
+                    await callback.message.edit_text(
+                        progress_text,
+                        parse_mode="Markdown"
+                    )
+                
+            except Exception as e:
+                error_count += 1
+                print(f"Ошибка отправки пользователю {user_id}: {e}")
+        
+        # Финальное сообщение с результатами
+        final_text = (
+            f"✅ **РАССЫЛКА ЗАВЕРШЕНА**\n\n"
+            f"👥 Всего получателей: **{users_count}**\n"
+            f"✅ Успешно отправлено: **{success_count}**\n"
+            f"❌ Ошибок: **{error_count}**\n"
+            f"📊 Процент успеха: **{(success_count/users_count*100):.1f}%**\n\n"
+            "Рассылка завершена!"
+        )
+        
+        await callback.message.edit_text(
+            final_text,
+            reply_markup=get_back_to_admin_keyboard(),
+            parse_mode="Markdown"
+        )
+        
+        await state.clear()
+        await callback.answer("✅ Рассылка завершена!")
+        
+    except Exception as e:
+        await callback.message.edit_text(
+            f"❌ **ОШИБКА РАССЫЛКИ**\n\n"
+            f"Произошла ошибка: {str(e)}\n\n"
+            "Попробуйте еще раз.",
+            reply_markup=get_back_to_admin_keyboard(),
+            parse_mode="Markdown"
+        )
+        await state.clear()
+        await callback.answer("❌ Ошибка рассылки!")
+
+@router.callback_query(F.data == "broadcast_cancel")
+async def broadcast_cancel_sending(callback: CallbackQuery, state: FSMContext):
+    """Отменяет рассылку"""
+    await state.clear()
+    await callback.message.edit_text(
+        "❌ **РАССЫЛКА ОТМЕНЕНА**\n\n"
+        "Создание рассылки отменено.",
+        reply_markup=get_back_to_admin_keyboard(),
+        parse_mode="Markdown"
+    )
+    await callback.answer("❌ Рассылка отменена")
+
+@router.callback_query(F.data == "broadcast_edit")
+async def broadcast_edit_message(callback: CallbackQuery, state: FSMContext):
+    """Возвращает к редактированию сообщения"""
+    await callback.message.edit_text(
+        "✏️ **РЕДАКТИРОВАНИЕ СООБЩЕНИЯ**\n\n"
+        "Введите новый текст сообщения для рассылки:\n\n"
+        "💡 Поддерживается Markdown разметка\n"
+        "💡 Можно использовать эмодзи\n"
+        "💡 Максимум 4096 символов",
+        parse_mode="Markdown"
+    )
+    await state.set_state(AdminBroadcast.waiting_message)
+    await callback.answer()
+
+@router.callback_query(F.data == "broadcast_stats")
+async def broadcast_show_stats(callback: CallbackQuery):
+    """Показывает статистику пользователей для рассылки"""
+    try:
+        users = await get_all_users()
+        users_count = len(users)
+        
+        # Получаем дополнительную статистику из базы данных
+        async with async_session_factory() as session:
+            # Подсчитываем пользователей с командами
+            teams_result = await session.execute(
+                select(func.count(User.id)).where(User.team_id.isnot(None))
+            )
+            users_with_teams = teams_result.scalar() or 0
+            
+            # Подсчитываем пользователей без команд
+            users_without_teams = users_count - users_with_teams
+        
+        stats_text = (
+            "📊 **СТАТИСТИКА ПОЛЬЗОВАТЕЛЕЙ**\n\n"
+            f"👥 Всего пользователей: **{users_count}**\n"
+            f"👥 С командами: **{users_with_teams}**\n"
+            f"👤 Без команд: **{users_without_teams}**\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "💡 Все пользователи получат рассылку\n"
+            "💡 Рассылка отправляется всем зарегистрированным пользователям"
+        )
+        
+        await callback.message.edit_text(
+            stats_text,
+            reply_markup=get_back_to_admin_keyboard(),
+            parse_mode="Markdown"
+        )
+        await callback.answer()
+        
+    except Exception as e:
+        await callback.answer(f"Ошибка: {str(e)}")
