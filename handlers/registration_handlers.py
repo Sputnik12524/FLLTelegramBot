@@ -51,7 +51,7 @@ async def already_registered(callback: CallbackQuery, state: FSMContext):
     await state.set_state(ShortRegister.wait_info)
 
 
-@router.callback_query(F.data=="back_to_menu")
+@router.callback_query(F.data=="main_menu")
 async def back_register(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     data = await state.get_data()
@@ -63,8 +63,8 @@ async def back_register(callback: CallbackQuery, state: FSMContext):
             print(f"Не удалось удалить сообщение: {e}")    
     
     await callback.message.edit_text(
-        "Привет! Этот бот был разработан для Лиги Решений и предоставляет следующие полезные функции: ",
-                                      reply_markup=kb_client)
+        "Главное меню бота:",
+        reply_markup=kb_client)
     await state.clear()
 
 

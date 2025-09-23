@@ -23,6 +23,9 @@ class AdminBroadcast(StatesGroup):
 
 router = Router()
 
+# Список ID администраторов, которым разрешена модерация рекордов
+ADMIN_IDS = [1349663945]
+
 def get_admin_keyboard():
     """Создает клавиатуру админ-панели"""
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -92,16 +95,17 @@ async def show_admin_records_menu(callback: CallbackQuery):
         total_count = total_result.scalar() or 0
     
     records_text = (
-        "🏆 **УПРАВЛЕНИЕ РЕКОРДАМИ**\n"
+        "🏆 УПРАВЛЕНИЕ РЕКОРДАМИ\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📊 **Статистика рекордов:**\n"
-        f"⏳ На проверке: **{pending_count}**\n"
-        f"✅ Одобренные: **{approved_count}**\n"
-        f"❌ Отклоненные: **{rejected_count}**\n"
-        f"📋 Всего: **{total_count}**\n\n"
+        f"📊 Статистика рекордов:\n"
+        f"⏳ На проверке: {pending_count}\n"
+        f"✅ Одобренные{approved_count}\n"
+        f"❌ Отклоненные: {rejected_count}\n"
+        f"📋 Всего: {total_count}\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "Выберите категорию для просмотра:"
     )
+    
     
     await callback.message.edit_text(
         records_text,
@@ -119,41 +123,47 @@ async def show_pending_records(callback: CallbackQuery):
             select(SubmittedRecord).where(SubmittedRecord.status == "pending")
         )
         pending_records = result.scalars().all()
-    
+
     if not pending_records:
         await callback.message.edit_text(
-            "⏳ **РЕКОРДЫ НА ПРОВЕРКЕ**\n\n"
+            "⏳ РЕКОРДЫ НА ПРОВЕРКЕ\n\n"
             "📭 Нет рекордов, ожидающих проверки.",
             reply_markup=get_back_to_admin_keyboard()
         )
         return
+
     
-    records_text = (
-        "⏳ **РЕКОРДЫ НА ПРОВЕРКЕ**\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    )
-    
-    for i, record in enumerate(pending_records[:5], 1):  # Показываем первые 5
-        records_text += (
-            f"**{i}. {record.first_name}** - {record.score} очков\n"
-            f"   📅 {record.date} | ⏰ {record.created_at.strftime('%d.%m.%Y %H:%M')}\n"
-            f"   🆔 `{record.record_id}`\n\n"
-        )
-    
-    if len(pending_records) > 5:
-        records_text += f"... и еще {len(pending_records) - 5} рекордов\n\n"
-    
-    records_text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n💡 Нажмите на ID рекорда для детального просмотра"
-    
+    # Отправляем карточки с кнопками модерации для каждой заявки
+    for record in pending_records:
+        try:
+            card_text = (
+                "⏳ Заявка на рекорд\n\n"
+                f"👤 {record.first_name} (ID `{record.user_tg_id}`)\n"
+                f"🎯 Очки: {record.score}\n"
+                f"📅 Дата: {record.date}\n"
+                f"🆔 Заявка: `{record.record_id}`\n"
+                f"⏰ Отправлено: {record.created_at.strftime('%d.%m.%Y %H:%M')}"
+            )
+            await callback.message.answer(
+                card_text,
+                reply_markup=get_admin_record_review_keyboard(record.record_id),
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
     await callback.message.edit_text(
-        records_text,
-        reply_markup=get_back_to_admin_keyboard(),
-        parse_mode="Markdown"
+        "⏳ Отправлены заявки ниже. Выберите нужную и примите решение.",
+        reply_markup=get_back_to_admin_keyboard()
     )
     await callback.answer()
 
 @router.callback_query(F.data.startswith("approve_record_"))
 async def approve_record(callback: CallbackQuery):
+    # Проверка прав администратора: одобрение только из админ-панели
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Доступ запрещён", show_alert=True)
+        return
     record_id = callback.data.replace("approve_record_", "")
     async with async_session_factory() as session:
         from database.models import SubmittedRecord, Record
@@ -177,6 +187,10 @@ async def approve_record(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("reject_record_"))
 async def reject_record(callback: CallbackQuery):
+    # Проверка прав администратора: отклонение только из админ-панели
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Доступ запрещён", show_alert=True)
+        return
     record_id = callback.data.replace("reject_record_", "")
     async with async_session_factory() as session:
         from database.models import SubmittedRecord
@@ -276,7 +290,7 @@ async def admin_show_stats(callback: CallbackQuery):
             teams_count = teams_result.scalar()
             
         stats_text = (
-            "📊 **Статистика бота**\n\n"
+            "📊 Статистика бота\n\n"
             f"👤 Всего пользователей: **{users_count}**\n"
             f"👥 Всего команд: **{teams_count}**\n"
         )
@@ -305,11 +319,11 @@ async def admin_show_teams(callback: CallbackQuery):
             teams = result.all()
             
         if teams:
-            teams_text = "👥 **Список команд (последние 10):**\n\n"
+            teams_text = "👥 Список команд (последние 10):\n\n"
             for i, (team, city, number) in enumerate(teams, 1):
                 teams_text += f"**{i}.** {team}\n📍 {city} | 🔢 #{number}\n\n"
         else:
-            teams_text = "👥 **Команды не найдены**\n\nПока никто не зарегистрировался."
+            teams_text = "👥 Команды не найдены\n\nПока никто не зарегистрировался."
             
         await callback.message.edit_text(
             teams_text,
@@ -324,7 +338,7 @@ async def admin_show_teams(callback: CallbackQuery):
 async def admin_close_panel(callback: CallbackQuery):
     """Закрывает админ-панель"""
     await callback.message.edit_text(
-        "🔒 **Админ-панель закрыта**\n\n"
+        "🔒 Админ-панель закрыта\n\n"
         "Для повторного входа используйте команду /admin",
         parse_mode="Markdown"
     )

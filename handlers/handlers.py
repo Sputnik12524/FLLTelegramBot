@@ -21,6 +21,17 @@ class Register(StatesGroup):
 router = Router()
 
 
+@router.callback_query(F.data == "main_menu")
+async def show_main_menu(callback: CallbackQuery):
+    """Показывает главное меню бота"""
+    from keybords import kb_client
+    await callback.message.answer(
+        "Главное меню бота:",
+        reply_markup=kb_client
+    )
+    await callback.answer()
+
+
 @router.callback_query(F.data == "missions")
 async def show_calculator(callback: CallbackQuery):
     """Показывает главное меню калькулятора"""

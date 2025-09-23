@@ -35,7 +35,7 @@ b7 = InlineKeyboardButton(
 )
 b_back = InlineKeyboardButton(
     text="Назад ↩️",
-    callback_data="menu_pt"
+    callback_data="main_menu"
 )
 b_again = InlineKeyboardButton(
     text="Начать заново",
@@ -75,7 +75,7 @@ def get_patent_menu_keyboard(current_page: int, total_pages: int) -> InlineKeybo
                               callback_data="select_page_pt")  # Отображаем текущую/всего страниц
     b5m = InlineKeyboardButton(text="⏭️", callback_data="next_page_pt")
     b6m = InlineKeyboardButton(text="📢 Опубликовать свои изобретения 📢", callback_data="publish_pt")
-    b_back_m = InlineKeyboardButton(text="Назад ↩️", callback_data="menu_pt")  # Callback для возврата в главное меню бота
+    b_back_m = InlineKeyboardButton(text="Назад ↩️", callback_data="main_menu")  # Callback для возврата в главное меню бота
 
     first_row_m = [b1m]
     second_row_m = [b2m]

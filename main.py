@@ -1,9 +1,11 @@
 import asyncio
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.methods import pin_chat_message
 from config import TOKEN
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.filters import CommandStart
-from aiogram.types import Message
+from aiogram.filters import CommandStart, Command
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from keybords import kb_client
 from handlers.handlers import router as handlers_router
 from handlers.patent_handlers import router as patent_router
@@ -39,8 +41,27 @@ async def cmd_start(message: Message, session: AsyncSession):
         session.add(new_user)
         await session.commit()
 
-    await message.answer("Привет! Этот бот был разработан для Лиги Решений и предоставляет следующие полезные функции: \nЕсли вы столкнулись с проблемой, напишите нам в чат: https://t.me/+544PCMqLwrU3NWEy  ", reply_markup=kb_client)
-
+    # Создаем кнопку для открытия главного меню
+    menu_button = InlineKeyboardButton(
+        text="Открыть главное меню",
+        callback_data="main_menu"
+    )
+    menu_keyboard = InlineKeyboardMarkup(inline_keyboard=[[menu_button]])
+    
+    sent_message = await message.answer(
+        "Привет! Этот бот был разработан для команд Лиги Решений.\nС его помощью ты поделиться с другими командами своими достижениями, посмотреть рекорды России, посчитать баллы за миссии и многое другое. \nСоветуем зайти тебе к нам в чат, там мы будем публиковать об обновлениях в боте: https://t.me/+544PCMqLwrU3NWEy \n\nДля открытия меню введи команду /menu или нажми на кнопку ниже:",
+        reply_markup=menu_keyboard
+    )
+    # Пытаемся закрепить стартовое сообщение (в группах/супергруппах при наличии прав)
+    try:
+        await bot.pin_chat_message(chat_id=message.chat.id, message_id=sent_message.message_id, disable_notification=True)
+    except Exception:
+        pass
+    
+@dp.message(Command("menu"))
+async def cmd_menu(message: Message):
+    """Показывает главное меню бота"""
+    await message.answer("Главное меню бота:", reply_markup=kb_client)
 
 async def main():
     # Инициализация базы данных (создание таблиц)

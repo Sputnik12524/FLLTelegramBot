@@ -442,12 +442,12 @@ async def back_to_general_browsing(callback: CallbackQuery, state: FSMContext, s
     await state.update_data(current_page=displayed_page)
 
 
-@router.callback_query(F.data == "menu_pt", PatentBrowsing.browsing_menu)
-@router.callback_query(F.data == "menu_pt", PatentBrowsing.displaying_team_patents)
+@router.callback_query(F.data == "main_menu", PatentBrowsing.browsing_menu)
+@router.callback_query(F.data == "main_menu", PatentBrowsing.displaying_team_patents)
 async def return_to_main_menu_from_patents(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.clear()
-    await callback.message.answer("Вы вернулись в главное меню.", reply_markup=kb_client)
+    await callback.message.edit_text("Главное меню бота:", reply_markup=kb_client)
 
 
 @router.message(Publish.mission_number)

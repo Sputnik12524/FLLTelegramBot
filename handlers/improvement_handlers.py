@@ -61,7 +61,7 @@ async def back_to_main_menu(callback: CallbackQuery):
     """Возврат к главному меню бота"""
     try:
         await callback.message.edit_text(
-            "Привет! Этот бот был разработан для Лиги Решений и предоставляет следующие полезные функции: ",
+            "Главное меню бота:",
             reply_markup=kb_client
         )
         await callback.answer()
