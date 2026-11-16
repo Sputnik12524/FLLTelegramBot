@@ -7,56 +7,53 @@ import json
 
 class FLLCalculator:
     def __init__(self):
-        # Глобальный максимум сезона (итог должен быть 700)
-        self.global_max_total = 700
+        # Глобальный максимум сезона (итог должен быть 500)
+        self.global_max_total = 500
         self.missions = {
-            "mission_1": {"name": "Проверка оборудования", "max_points": 40},
-            "mission_2": {"name": "Инновационный проект", "max_points": 30},
-            "mission_3": {"name": "Светофор", "max_points": 30},
-            "mission_4": {"name": "Надземный пешеходный переход", "max_points": 30},
-            "mission_5": {"name": "Ямочный ремонт", "max_points": 25},
-            "mission_6": {"name": "Самокаты", "max_points": 20},
-            "mission_7": {"name": "Парковка самокатов", "max_points": 80},
-            "mission_8": {"name": "Железнодорожный переезд", "max_points": 45},
-            "mission_9": {"name": "Лежачий полицейский", "max_points": 25},
-            "mission_10": {"name": "Эвакуатор", "max_points": 50},
-            "mission_11": {"name": "Дорожное ограждение", "max_points": 25},
-            "mission_12": {"name": "Автобус", "max_points": 30},
-            "mission_13": {"name": 'Знак"СТОП!"', "max_points": 35},
-            "mission_14": {"name": "Автобусная остановка", "max_points": 40},
-            "mission_15": {"name": "Парковка", "max_points": 50},
-            "mission_16": {"name": "Взаимодействие", "max_points": 40},
-            "mission_17": {"name": "Жетоны точности", "max_points": 60},
+            "mission_1": {"name": "Проверка оборудования", "max_points": 20},
+            "mission_2": {"name": "Разведка дроном", "max_points": 30},
+            "mission_3": {"name": "Распространение семян", "max_points": 20},
+            "mission_4": {"name": "Камень-перевёртыш", "max_points": 30},
+            "mission_5": {"name": "Листья", "max_points": 30},
+            "mission_6": {"name": "Растущие корни", "max_points": 20},
+            "mission_7": {"name": "Муравьи-листорезы", "max_points": 40},
+            "mission_8": {"name": "Грибница", "max_points": 30},
+            "mission_9": {"name": "Лианы", "max_points": 30},
+            "mission_10": {"name": "Исследовательская платформа", "max_points": 30},
+            "mission_11": {"name": "Заповедник", "max_points": 20},
+            "mission_12": {"name": "Летопись леса", "max_points": 20},
+            "mission_13": {"name": 'Вековое дерево', "max_points": 30},
+            "mission_14": {"name": "Ключевые виды", "max_points": 30},
+            "mission_15": {"name": "Посадка семян", "max_points": 30},
+            "mission_16": {"name": "Экологичная архитектура", "max_points": 40},
+            "mission_17": {"name": "Жетоны точности", "max_points": 50},
         }
         # Наборы пользовательских кнопок для отдельных миссий.
         # Пример: для проверки оборудования показываем только 0/30/40
         # Чтобы настроить другие миссии, добавьте сюда: "mission_X": [список баллов]
         self.mission_point_presets = {
-            "mission_1": [0, 30, 40],
+            "mission_1": [0, 20],
             "mission_2": [0, 20, 30],
-            "mission_3": [0, 15, 30],
+            "mission_3": [0, 10, 20, 30],
             "mission_4": [0, 20, 30],
-            "mission_5": [0, 25],
-            "mission_8": [0, 25, 45],
-            "mission_9": [0, 25],
-            "mission_10": [0, 10, 50],
+            "mission_5": [0, 10, 30],
+            "mission_6": [0, 10, 20],
+            "mission_7": [0, 10, 20, 30, 40],
+            "mission_8": [0, 10, 20, 30],
+            "mission_9": [0, 30],
+            "mission_10": [0, 10, 20, 30],
             "mission_11": [0, 25],
             "mission_12": [0, 10, 30],
-            "mission_13": [0, 35],
-            "mission_14": [0, 20, 40],
+            "mission_13": [0, 10, 20, 30],
+            "mission_14": [0, 30],
             "mission_15": [0, 20, 30, 50],
-            "mission_16": [0, 40],
-            "mission_17": [0, 15, 25, 35, 35, 60],
+            "mission_16": [0, 10, 20, 30, 40],
+            "mission_17": [0, 10, 15, 25, 35, 50],
         }
         # Правила миссий, где нужно вводить/выбирать количество
         # Используем отображение количества в баллы через коэффициент, при этом
         # под капотом формируем стандартные callback с конкретным числом баллов.
-        self.count_mission_rules = {
-            # Самокаты: 10 баллов за каждый; максимум 2 шт = 20 баллов
-            "mission_6": {"points_per_unit": 10, "max_units": 2, "unit_label": "шт"},
-            # Парковка самокатов: 20 баллов за каждый; максимум 4 шт = 80 баллов
-            "mission_7": {"points_per_unit": 20, "max_units": 4, "unit_label": "шт"},
-        }
+        self.count_mission_rules = {}
         self.user_scores = {}
     
     def get_main_keyboard(self, user_id=None):

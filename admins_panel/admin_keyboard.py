@@ -1,14 +1,18 @@
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
-from database.models import User, UserTeams
+import logging
+from database.models import (
+    FLLResult, Improvement, Patent, Record, SubmittedRecord, User, UserTeams,
+)
 from database.engine import async_session_factory
 import os
 from sqlalchemy.ext.asyncio import AsyncSession
 from scheduler import get_reminder_scheduler
-from sqlalchemy import select, func
+from sqlalchemy import delete, func, select, update
 
 # Пароль для админ-панели
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "48)a$7yHRI6BM%_l5R(s")
@@ -22,6 +26,7 @@ class AdminBroadcast(StatesGroup):
     sending_messages = State()
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 # Список ID администраторов, которым разрешена модерация рекордов
 ADMIN_IDS = [1349663945]
@@ -66,6 +71,156 @@ def get_records_filter_keyboard():
         [InlineKeyboardButton(text="📋 Все рекорды", callback_data="admin_records_all")],
         [InlineKeyboardButton(text="⬅️ Назад к панели", callback_data="admin_back")]
     ])
+
+
+def get_clear_data_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👥 Очистить список команд", callback_data="admin_clear_teams")],
+        [InlineKeyboardButton(text="💡 Очистить инновационные решения", callback_data="admin_clear_patents")],
+        [InlineKeyboardButton(text="🏆 Очистить рекорды и заявки", callback_data="admin_clear_records")],
+        [InlineKeyboardButton(text="⬅️ Назад к панели", callback_data="admin_back")]
+    ])
+
+
+def get_clear_confirmation_keyboard(category: str):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Да, очистить", callback_data=f"admin_clear_confirm_{category}"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="admin_clear")
+        ]
+    ])
+
+
+async def ensure_cleanup_admin(callback: CallbackQuery) -> bool:
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Недостаточно прав для очистки данных.", show_alert=True)
+        return False
+    return True
+
+
+@router.callback_query(F.data == "admin_clear")
+async def admin_show_clear_data_menu(callback: CallbackQuery):
+    if not await ensure_cleanup_admin(callback):
+        return
+    await callback.message.edit_text(
+        "🗑 **Очистка данных**\n\n"
+        "Выберите данные для удаления. Перед очисткой будет показано подтверждение.",
+        reply_markup=get_clear_data_keyboard(),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.in_({
+    "admin_clear_teams",
+    "admin_clear_patents",
+    "admin_clear_records",
+}))
+async def admin_confirm_clear_data(callback: CallbackQuery):
+    if not await ensure_cleanup_admin(callback):
+        return
+
+    category = callback.data.removeprefix("admin_clear_")
+    async with async_session_factory() as session:
+        if category == "teams":
+            teams_count = await session.scalar(select(func.count(UserTeams.id))) or 0
+            records_count = await session.scalar(select(func.count(Record.id))) or 0
+            submissions_count = await session.scalar(select(func.count(SubmittedRecord.id))) or 0
+            patents_count = await session.scalar(select(func.count(Patent.id))) or 0
+            users_count = await session.scalar(
+                select(func.count(User.id)).where(User.team_id.is_not(None))
+            ) or 0
+            details = (
+                f"Команд: **{teams_count}**\n"
+                f"Рекордов и заявок: **{records_count + submissions_count}** "
+                f"({records_count} рекордов, {submissions_count} заявок)\n"
+                f"Инновационных решений: **{patents_count}**\n"
+                f"Профилей пользователей будут отвязаны от команд: **{users_count}**\n\n"
+                "Профили пользователей, доработки и сохранённые результаты калькулятора останутся."
+            )
+            description = "Удалить все команды и связанные с ними данные?"
+        elif category == "patents":
+            count = await session.scalar(select(func.count(Patent.id))) or 0
+            details = f"Инновационных решений: **{count}**"
+            description = "Удалить все инновационные решения?"
+        else:
+            records_count = await session.scalar(select(func.count(Record.id))) or 0
+            submissions_count = await session.scalar(select(func.count(SubmittedRecord.id))) or 0
+            details = (
+                f"Рекордов: **{records_count}**\n"
+                f"Заявок на проверку: **{submissions_count}**"
+            )
+            description = "Удалить все рекорды и заявки на проверку?"
+
+    await callback.message.edit_text(
+        f"⚠️ **Подтвердите очистку**\n\n{description}\n\n{details}\n\n"
+        "Это действие нельзя отменить.",
+        reply_markup=get_clear_confirmation_keyboard(category),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.in_({
+    "admin_clear_confirm_teams",
+    "admin_clear_confirm_patents",
+    "admin_clear_confirm_records",
+}))
+async def admin_clear_data(callback: CallbackQuery):
+    if not await ensure_cleanup_admin(callback):
+        return
+
+    category = callback.data.removeprefix("admin_clear_confirm_")
+    async with async_session_factory() as session:
+        if category == "teams":
+            team_ids = select(UserTeams.id)
+            team_numbers = select(UserTeams.number)
+
+            await session.execute(update(User).where(User.team_id.in_(team_ids)).values(team_id=None))
+            await session.execute(
+                update(Improvement).where(Improvement.team_id.in_(team_ids)).values(team_id=None)
+            )
+            await session.execute(
+                update(FLLResult).where(FLLResult.team_id.in_(team_ids)).values(team_id=None)
+            )
+            records_deleted = await session.execute(
+                delete(Record).where(Record.r_team.in_(team_ids))
+            )
+            submissions_deleted = await session.execute(
+                delete(SubmittedRecord).where(SubmittedRecord.team_id.in_(team_ids))
+            )
+            patents_deleted = await session.execute(
+                delete(Patent).where(Patent.team_number.in_(team_numbers))
+            )
+            teams_deleted = await session.execute(delete(UserTeams))
+            await session.commit()
+            result_text = (
+                f"Команд удалено: {teams_deleted.rowcount or 0}\n"
+                f"Рекордов и заявок удалено: "
+                f"{(records_deleted.rowcount or 0) + (submissions_deleted.rowcount or 0)}\n"
+                f"Инновационных решений удалено: {patents_deleted.rowcount or 0}\n"
+                "Профили пользователей оставлены без привязки к командам."
+            )
+        elif category == "patents":
+            result = await session.execute(delete(Patent))
+            await session.commit()
+            result_text = f"Инновационных решений удалено: {result.rowcount or 0}"
+        else:
+            records_deleted = await session.execute(delete(Record))
+            submissions_deleted = await session.execute(delete(SubmittedRecord))
+            await session.commit()
+            result_text = (
+                f"Рекордов удалено: {records_deleted.rowcount or 0}\n"
+                f"Заявок на проверку удалено: {submissions_deleted.rowcount or 0}"
+            )
+
+    await callback.message.edit_text(
+        f"✅ **Очистка завершена**\n\n{result_text}",
+        reply_markup=get_clear_data_keyboard(),
+        parse_mode="Markdown"
+    )
+    await callback.answer("Данные очищены")
+
 
 @router.callback_query(F.data == "admin_records")
 async def show_admin_records_menu(callback: CallbackQuery):
@@ -138,19 +293,23 @@ async def show_pending_records(callback: CallbackQuery):
         try:
             card_text = (
                 "⏳ Заявка на рекорд\n\n"
-                f"👤 {record.first_name} (ID `{record.user_tg_id}`)\n"
+                f"👤 {record.first_name} (ID {record.user_tg_id})\n"
                 f"🎯 Очки: {record.score}\n"
                 f"📅 Дата: {record.date}\n"
-                f"🆔 Заявка: `{record.record_id}`\n"
+                f"🆔 Заявка: {record.record_id}\n"
                 f"⏰ Отправлено: {record.created_at.strftime('%d.%m.%Y %H:%M')}"
             )
             await callback.message.answer(
                 card_text,
-                reply_markup=get_admin_record_review_keyboard(record.record_id),
-                parse_mode="Markdown"
+                reply_markup=get_admin_record_review_keyboard(record.record_id)
             )
-        except Exception:
-            pass
+        except TelegramAPIError:
+            logger.exception("Failed to display pending record %s", record.record_id)
+            await callback.answer(
+                "Не удалось показать карточку заявки. Попробуйте открыть раздел ещё раз.",
+                show_alert=True
+            )
+            return
 
     await callback.message.edit_text(
         "⏳ Отправлены заявки ниже. Выберите нужную и примите решение.",

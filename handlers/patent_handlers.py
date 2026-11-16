@@ -72,7 +72,7 @@ def get_missions_input_and_validate(missions):
 async def back(callback: CallbackQuery):
     await callback.answer("Назад")
     await callback.message.answer(
-        text="Привет! Этот бот был разработан для Лиги Решений и предоставляет следующие полезные функции: ",
+        text="Привет! Этот бот был разработан для Лиги Инженеров Юниор и предоставляет следующие полезные функции: ",
         reply_markup=kb_client
     )
 
@@ -295,6 +295,16 @@ async def cancel_any_input(callback: CallbackQuery, state: FSMContext, session: 
         filter_condition=current_filter
     )
     await state.update_data(current_page=displayed_page)
+
+
+@router.callback_query(F.data == "cancel_input_pt", Publish.mission_number)
+async def cancel_patent_publication(callback: CallbackQuery, state: FSMContext):
+    await callback.answer("Публикация отменена")
+    await state.clear()
+    await callback.message.edit_text(
+        "Публикация отменена. Выберите функцию:",
+        reply_markup=patent_kb_client
+    )
 
 
 @router.callback_query(F.data == "find_by_mission_pt", PatentBrowsing.browsing_menu)

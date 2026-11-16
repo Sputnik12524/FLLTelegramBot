@@ -1,10 +1,11 @@
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from datetime import datetime, timedelta
 from keybords.keybord_client import kb_client
+import logging
 import re
 import sqlite3
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +21,8 @@ from records.record_kb import (
 )
 
 router = Router()
+logger = logging.getLogger(__name__)
+MAX_RECORD_SCORE = 500
 
 def check_user_registration_simple(user_id: int) -> bool:
     """Простая проверка регистрации пользователя в системе"""
@@ -105,47 +108,39 @@ def _split_text(text: str, limit: int = 4000) -> list[str]:
     """Разбивает текст на части, безопасные для Telegram (лимит ~4096)."""
     if not text:
         return [""]
-    return [text[i:i + limit] for i in range(0, len(text), limit)]
+    chunks = []
+    chunk = []
+    chunk_length = 0
+    for character in text:
+        character_length = len(character.encode("utf-16-le")) // 2
+        if chunk and chunk_length + character_length > limit:
+            chunks.append("".join(chunk))
+            chunk = []
+            chunk_length = 0
+        chunk.append(character)
+        chunk_length += character_length
+    if chunk:
+        chunks.append("".join(chunk))
+    return chunks
 
 
-async def _send_message_chunked(bot, chat_id: int, text: str):
+async def _send_message_chunked(bot, chat_id: int, text: str, reply_markup=None):
     """Отправляет длинный текст несколькими сообщениями чтобы избежать MESSAGE_TOO_LONG."""
-    for chunk in _split_text(text):
-        await bot.send_message(chat_id=chat_id, text=chunk)
+    for index, chunk in enumerate(_split_text(text)):
+        await bot.send_message(
+            chat_id=chat_id,
+            text=chunk,
+            reply_markup=reply_markup if index == 0 else None
+        )
 
 @router.callback_query(F.data == "records")
 async def show_records_menu(callback: CallbackQuery):
-    """Показать главное меню рекордов"""
-    user_id = callback.from_user.id
-    
-    # Проверяем регистрацию пользователя
-    if not check_user_registration_simple(user_id):
-        await callback.message.edit_text(
-            "🏆 Меню рекордов Лиги Решений\n\n"
-            "❌ Доступ ограничен\n\n"
-            "Для работы с рекордами необходимо:\n"
-            "✅ Зарегистрироваться в системе\n"
-            "После регистрации вы сможете:\n"
-            "• Посмотреть актуальный рекорд России\n"
-            "• Отправить свой рекорд на проверку\n"
-            "• Просмотреть свои достижения\n"
-            "• Сравнить результаты с другими командами\n\n"
-            "Пожалуйста, сначала пройдите регистрацию.",
-            reply_markup=get_record_main_menu()
-        )
-        return
-    
-    await callback.message.edit_text(
-        "🏆 Меню рекордов Лиги Решений\n\n"
-        "Добро пожаловать в систему рекордов Лиги Решений!\n"
-        "Здесь вы можете:\n"
-        "• Посмотреть актуальный рекорд России\n"
-        "• Отправить свой рекорд на проверку\n"
-        "• Просмотреть свои достижения\n"
-        "• Сравнить результаты с другими командами\n\n"
-        "Выберите нужный раздел:",
-        reply_markup=get_record_main_menu()
+    """Временно показать сообщение о недоступности раздела рекордов."""
+    await callback.message.answer(
+        "Ой, кажись мы потеряли связь с данной страницей... "
+        "Скоро вернёмся, подождите немного 🙏"
     )
+    await callback.answer()
 
 @router.callback_query(F.data == "submit_record")
 async def start_record_submission(callback: CallbackQuery, state: FSMContext):
@@ -258,7 +253,7 @@ async def process_date_input(message: Message, state: FSMContext):
         )
         await message.answer(
             "🎯 Шаг 2 из 3 — укажите количество набранных очков.\n\n"
-            "Введите число от 0 до 700.",
+            f"Введите число от 0 до {MAX_RECORD_SCORE}.",
             reply_markup=get_score_input_keyboard()
         )
         
@@ -276,7 +271,7 @@ async def set_record_score(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "🎯 Укажите количество набранных очков\n\n"
         "Введите число от 0 до максимально возможного количества очков.\n"
-        "Максимальное количество очков: 700\n\n"
+        f"Максимальное количество очков: {MAX_RECORD_SCORE}\n\n"
         "💡 Убедитесь, что указываете точное количество очков, "
         "которое видно на финальном экране."
     )
@@ -307,7 +302,7 @@ async def process_score_input(message: Message, state: FSMContext):
     # Если пользователь нажал кнопку из клавиатуры, подскажем ввести число
     if text.strip() == "🎯 Ввести количество очков":
         await message.answer(
-            "Введите число очков (0-700) цифрами, например: 345",
+            f"Введите число очков (0-{MAX_RECORD_SCORE}) цифрами, например: 345",
             reply_markup=get_score_input_keyboard()
         )
         return
@@ -321,9 +316,9 @@ async def process_score_input(message: Message, state: FSMContext):
             )
             return
         
-        if score > 700:
+        if score > MAX_RECORD_SCORE:
             await message.answer(
-                "❌ Максимальное количество очков: 700",
+                f"❌ Максимальное количество очков: {MAX_RECORD_SCORE}",
                 reply_markup=get_score_input_keyboard()
             )
             return
@@ -363,7 +358,7 @@ async def upload_video(callback: CallbackQuery, state: FSMContext):
         "• Четко видна игровая область\n"
         "• Видно финальный счет\n"
         "• Полный раунд от начала до конца\n"
-        "• Соблюдение всех правил Лиги Решений\n\n"
+        "• Соблюдение всех правил Лиги Инженеров Юниор\n\n"
         "⚠️ Видео будет проверено модераторами"
     )
     
@@ -466,10 +461,6 @@ async def process_video_input(message: Message, state: FSMContext):
         
         # Переходим к подтверждению
         await state.set_state(RecordSubmissionStates.confirming_submission)
-        await message.answer(
-            f"✅ Ссылка на видео сохранена: {text}",
-            reply_markup=remove_keyboard()
-        )
         user_data = user_record_data[user_id]
         video_info = f"🔗 {user_data['video']['platform']}: {user_data['video']['url']}"
         confirmation_text = (
@@ -485,7 +476,9 @@ async def process_video_input(message: Message, state: FSMContext):
             "⚠️ После отправки данные нельзя будет изменить!\n"
             "Рекорд будет отправлен на проверку администраторам.\n\n"
             "Подтвердите отправку:")
-        await message.answer(
+        await _send_message_chunked(
+            message.bot,
+            message.chat.id,
             confirmation_text,
             reply_markup=get_confirmation_keyboard()
         )
@@ -536,6 +529,13 @@ async def submit_for_review(callback: CallbackQuery):
             show_alert=True
         )
         return
+
+    if not isinstance(user_data['score'], int) or not 0 <= user_data['score'] <= MAX_RECORD_SCORE:
+        await callback.answer(
+            f"❌ Количество очков должно быть от 0 до {MAX_RECORD_SCORE}.",
+            show_alert=True
+        )
+        return
     
     # Показываем финальное подтверждение
     video_info = ""
@@ -583,7 +583,19 @@ async def confirm_submit_record(callback: CallbackQuery):
         )
         return
     
-    user_data = user_record_data[user_id]
+    user_data = user_record_data.get(user_id)
+    if not user_data or not all(key in user_data for key in ('date', 'score', 'video')):
+        await callback.answer(
+            "❌ Данные рекорда устарели или заполнены не полностью. Начните отправку заново.",
+            show_alert=True
+        )
+        return
+    if not isinstance(user_data['score'], int) or not 0 <= user_data['score'] <= MAX_RECORD_SCORE:
+        await callback.answer(
+            f"❌ Количество очков должно быть от 0 до {MAX_RECORD_SCORE}.",
+            show_alert=True
+        )
+        return
     
     # Создаем уникальный ID для рекорда
     import time
@@ -631,7 +643,7 @@ async def confirm_submit_record(callback: CallbackQuery):
         }
         
         # Отправляем уведомление администраторам
-        await send_record_to_admins(callback.message.bot, record_data)
+        admin_notified = await send_record_to_admins(callback.message.bot, record_data)
         
         # Очищаем данные пользователя
         del user_record_data[user_id]
@@ -649,11 +661,15 @@ async def confirm_submit_record(callback: CallbackQuery):
         f"🎯 **Очки:** {record_data['score']}\n"
         f"⏰ **Время отправки:** {record_data['submission_time']}\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "✅ Ваш рекорд отправлен на проверку администраторам\n"
+        "✅ Ваш рекорд сохранен и отправлен на проверку администраторам\n"
         "⏳ Ожидайте результатов проверки\n"
-        "📧 Вы получите уведомление о статусе рекорда\n\n"
-        "💡 Вы можете отслеживать статус в разделе \"Мои рекорды\""
+        "💡 Статус можно отслеживать в разделе \"Мои рекорды\"\n\n"
     )
+    if not admin_notified:
+        success_text += (
+            "\n⚠️ Не удалось отправить уведомление администратору. "
+            "Заявка сохранена и доступна в админ-панели."
+        )
     
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -681,7 +697,7 @@ async def cancel_submit_record(callback: CallbackQuery):
         reply_markup=get_record_submission_menu()
     )
 
-async def send_record_to_admins(bot, record_data):
+async def send_record_to_admins(bot, record_data) -> bool:
     """Отправить рекорд администраторам для проверки"""
     # Список ID администраторов (в реальном проекте лучше хранить в конфиге)
     ADMIN_IDS = [1349663945]  # ID администратора
@@ -715,6 +731,7 @@ async def send_record_to_admins(bot, record_data):
         "Проверьте видео и примите решение:"
     )
     
+    all_sent = True
     for admin_id in ADMIN_IDS:
         try:
             # Отправляем текст с информацией
@@ -742,8 +759,15 @@ async def send_record_to_admins(bot, record_data):
                     )
                 )
             
-        except Exception as e:
-            print(f"Ошибка отправки админу {admin_id}: {e}")
+        except TelegramAPIError:
+            logger.exception(
+                "Failed to notify admin %s about submitted record %s",
+                admin_id,
+                record_data['id']
+            )
+            all_sent = False
+
+    return all_sent
 
 # Добавляем обработчики для кнопок "Назад"
 @router.callback_query(F.data == "back_to_main")
@@ -921,8 +945,3 @@ async def show_top_records(callback: CallbackQuery, session: AsyncSession):
         
     except Exception as e:
         await callback.answer(f"Ошибка: {str(e)}")
-
-
-
-
-

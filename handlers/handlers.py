@@ -38,7 +38,7 @@ async def show_calculator(callback: CallbackQuery):
     try:
         keyboard = fll_calculator.get_main_keyboard(callback.from_user.id)
         await callback.message.edit_text(
-            "🧮 Калькулятор миссий Лиги Решений - Безопасный маршрут\n\n"
+            "🧮 Калькулятор миссий Лига Инженеров ЮНИОР - Сияние Природы\n\n"
             "Выберите миссию для установки очков:",
             reply_markup=keyboard,
             parse_mode="Markdown"
@@ -90,7 +90,7 @@ async def set_mission_score(callback: CallbackQuery):
         if success:
             keyboard = fll_calculator.get_main_keyboard(callback.from_user.id)
             await callback.message.edit_text(
-                "🧮 **Калькулятор миссий FLL - Богатый урожай**\n\n"
+                "🧮 **Калькулятор миссий Лиги Инженеров ЮНИОР - Сияние Природы**\n\n"
                 "Выберите миссию для установки очков:",
                 reply_markup=keyboard,
                 parse_mode="Markdown"
@@ -127,7 +127,7 @@ async def reset_calculator(callback: CallbackQuery):
         keyboard = fll_calculator.get_main_keyboard(callback.from_user.id)
 
         await callback.message.edit_text(
-            "🧮 **Калькулятор миссий Лиги Решений - Богатый урожай**\n\n"
+            "🧮 **Калькулятор миссий Лиги Инженеров Юниор - Богатый урожай**\n\n"
             "Все очки сброшены! Выберите миссию для установки очков:",
             reply_markup=keyboard,
             parse_mode="Markdown"
@@ -206,7 +206,7 @@ async def save_results(callback: CallbackQuery):
         # Возвращаемся к калькулятору
         keyboard = fll_calculator.get_main_keyboard(user_id)
         await callback.message.edit_text(
-            "🧮 **Калькулятор миссий FLL - Богатый урожай**\n\n"
+            "🧮 **Калькулятор миссий Лига Инженеров ЮНИОР - Сияние Природы**\n\n"
             f"✅ Результаты успешно сохранены!\n"
             f"📅 Дата: {formatted_datetime}\n"
             "Выберите миссию для установки очков:",
@@ -237,7 +237,7 @@ async def show_my_results(callback: CallbackQuery):
         if not results:
             keyboard = fll_calculator.get_main_keyboard(user_id)
             await callback.message.edit_text(
-                "🧮 **Калькулятор миссий Лиги Решений - Богатый урожай**\n\n"
+                "🧮 **Калькулятор миссий Лиги Инженеров Юниор - Богатый урожай**\n\n"
                 "📋 У вас пока нет сохраненных результатов.\n"
                 "Выберите миссию для установки очков:",
                 reply_markup=keyboard,
@@ -539,7 +539,6 @@ async def handle_photo(message: Message, session: AsyncSession, state: FSMContex
     except Exception as e:
         # Не отправляем ответное сообщение, чтобы не мешать пользователю
         pass
-
 
 
 
